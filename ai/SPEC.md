@@ -1,22 +1,22 @@
 # toml-zig — Specification
 
-**Status:** 0.1.0, implemented and tested against the TOML 1.0.0 specification examples; see "Known deviations".
+**Status:** 0.1.0, implemented and tested against the TOML 1.0.0 specification examples and the TOML 1.1.0 changes; see "Known deviations".
 
 ## Purpose
 
-A small, dependency-free TOML 1.0.0 parser and writer for Zig 0.17, written for DKDE's configuration files but usable by any project. Reference: https://toml.io/en/v1.0.0 (normative text and ABNF in toml-lang/toml at tag v1.0.0).
-
-Add toml 1.1.0 support
+A small, dependency-free TOML 1.1.0 parser and writer for Zig 0.17, written for DKDE's configuration files but usable by any project. Reference: https://toml.io/en/v1.1.0 and https://toml.io/en/v1.0.0 (normative text and ABNF in toml-lang/toml at tags 1.1.0 and 1.0.0). `Options.version` selects `.v1_1` (default) or `.v1_0`.
 
 ## Requirements
 
 - **TOML-1 (MUST):** Accept every valid TOML 1.0.0 document: all string forms, integers (decimal/hex/octal/binary, underscores), floats (incl. `inf`/`nan`), booleans, all four datetime forms, arrays (mixed types), tables, inline tables, arrays of tables, dotted keys.
+- **TOML-1.1 (MUST):** With `Options.version = .v1_1` (the default) also accept the 1.1.0 additions: newlines, comments and a trailing comma in inline tables; the `\xHH` and `\e` escapes; optional seconds in times. With `.v1_0` reject them. Every document valid under 1.0 must parse identically under 1.1 (tested).
 - **TOML-2 (MUST):** Reject invalid documents: duplicate keys, table redefinition, mutation of inline tables or dotted-key tables via headers, extending static arrays with `[[ ]]`, invalid escapes/scalar values, forbidden control characters, bad number/date forms, invalid UTF-8.
 - **TOML-3 (MUST):** Treat input as untrusted: bounded recursion (`Options.max_depth`, default 64), bounded input (`Options.max_bytes`, default 16 MiB), no undefined behavior on malformed bytes, no assumption of NUL termination.
 - **TOML-4 (MUST):** Report the first error with 1-based line and column and a static message (`Diagnostic`).
 - **TOML-5 (MUST):** One owner: a `Document` owns an arena; `deinit` frees everything. No leaks on error or allocation failure (tested with `FailingAllocator`).
 - **TOML-6 (MUST):** A writer producing valid TOML that parses back to an equal tree, with deterministic order (insertion order, scalars before sub-tables).
 - **TOML-7 (MUST):** Editing: values can be set by path; unknown keys in a parsed document survive a parse → edit → write cycle.
+- **TOML-9 (MUST):** Use `std.Io` for all input and output: parse incrementally from a `*std.Io.Reader` with bounded lookahead and write to a `*std.Io.Writer`; no file-system or OS calls. Tested with one-byte, failing and tiny-buffer readers and writers. See `docs/decisions/0001-streaming-parser.md`.
 - **TOML-8 (SHOULD):** No dependencies beyond the Zig standard library. Met.
 
 ## API summary

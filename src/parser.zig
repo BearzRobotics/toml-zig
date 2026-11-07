@@ -33,7 +33,15 @@ pub const Error = error{
 /// `Error` plus a failure of the underlying `Reader`.
 pub const ReadError = Error || error{ReadFailed};
 
+/// Which edition of the TOML specification to accept. 1.1.0 only adds syntax;
+/// every 1.0.0 document is also valid 1.1.0 and means the same thing.
+/// 1.1.0 (https://toml.io/en/v1.1.0, grammar at tag 1.1.0 of toml-lang/toml):
+/// newlines, comments and a trailing comma inside inline tables; the `\xHH`
+/// and `\e` string escapes; optional seconds in times.
+pub const Version = enum { v1_0, v1_1 };
+
 pub const Options = struct {
+    version: Version = .v1_1,
     /// Maximum nesting of arrays plus inline tables. Bounds recursion depth.
     max_depth: u32 = 64,
     /// Maximum input size in bytes.
@@ -490,6 +498,10 @@ const Parser = struct {
         defer self.depth -= 1;
         try self.s.bump(); // '{'
         const t = try self.newTable(.inline_table);
+        if (self.options.version == .v1_1) {
+            try self.inlineTableBody11(t);
+            return .{ .table = t };
+        }
         try self.skipWs();
         if (try self.eat('}')) return .{ .table = t };
         while (true) {
@@ -510,6 +522,22 @@ const Parser = struct {
             }
         }
         return .{ .table = t };
+    }
+
+    /// TOML 1.1: whitespace, comments and newlines may appear around every
+    /// key/value pair and comma, and the last pair may be followed by a comma.
+    fn inlineTableBody11(self: *Parser, t: *Table) ReadError!void {
+        while (true) {
+            try self.skipBlank();
+            if (try self.eat('}')) return;
+            try self.keyValue(t);
+            try self.skipBlank();
+            switch ((try self.s.peek()) orelse return self.err("unterminated inline table")) {
+                ',' => try self.s.bump(),
+                '}' => {},
+                else => return self.err("expected ',' or '}' in inline table"),
+            }
+        }
     }
 
     // ---- strings ---------------------------------------------------------
@@ -654,23 +682,32 @@ const Parser = struct {
             'r' => try self.scratch.append(self.gpa, '\r'),
             '"' => try self.scratch.append(self.gpa, '"'),
             '\\' => try self.scratch.append(self.gpa, '\\'),
-            'u', 'U' => {
-                const ndig: usize = if (c == 'u') 4 else 8;
-                var cp32: u32 = 0;
-                for (0..ndig) |_| {
-                    const h = (try self.s.peek()) orelse return self.errAt(esc, "truncated unicode escape");
-                    if (!std.ascii.isHex(h)) return self.errAt(esc, "invalid unicode escape");
-                    cp32 = cp32 * 16 + (std.fmt.charToDigit(h, 16) catch unreachable);
-                    try self.s.bump();
-                }
-                if (cp32 > 0x10FFFF or (cp32 >= 0xD800 and cp32 <= 0xDFFF))
-                    return self.errAt(esc, "unicode escape is not a scalar value");
-                var buf: [4]u8 = undefined;
-                const n = std.unicode.utf8Encode(@intCast(cp32), &buf) catch unreachable;
-                try self.scratch.appendSlice(self.gpa, buf[0..n]);
-            },
+            'e' => if (self.options.version == .v1_1) {
+                try self.scratch.append(self.gpa, 0x1B);
+            } else return self.errAt(esc, "invalid escape sequence"),
+            'x' => if (self.options.version == .v1_1) {
+                try self.unicodeEscape(esc, 2);
+            } else return self.errAt(esc, "invalid escape sequence"),
+            'u' => try self.unicodeEscape(esc, 4),
+            'U' => try self.unicodeEscape(esc, 8),
             else => return self.errAt(esc, "invalid escape sequence"),
         }
+    }
+
+    /// Reads `ndig` hex digits and appends the code point as UTF-8.
+    fn unicodeEscape(self: *Parser, esc: Loc, ndig: usize) ReadError!void {
+        var cp32: u32 = 0;
+        for (0..ndig) |_| {
+            const h = (try self.s.peek()) orelse return self.errAt(esc, "truncated unicode escape");
+            if (!std.ascii.isHex(h)) return self.errAt(esc, "invalid unicode escape");
+            cp32 = cp32 * 16 + (std.fmt.charToDigit(h, 16) catch unreachable);
+            try self.s.bump();
+        }
+        if (cp32 > 0x10FFFF or (cp32 >= 0xD800 and cp32 <= 0xDFFF))
+            return self.errAt(esc, "unicode escape is not a scalar value");
+        var buf: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(@intCast(cp32), &buf) catch unreachable;
+        try self.scratch.appendSlice(self.gpa, buf[0..n]);
     }
 
     // ---- numbers, booleans, datetimes -----------------------------------
@@ -705,7 +742,7 @@ const Parser = struct {
         if (std.mem.eql(u8, tok, "true")) return .{ .boolean = true };
         if (std.mem.eql(u8, tok, "false")) return .{ .boolean = false };
         if (looksLikeDate(tok) or (tok.len >= 3 and tok[2] == ':')) {
-            return .{ .datetime = parseDatetime(tok) orelse return self.errAt(start, "invalid date or time") };
+            return .{ .datetime = parseDatetime(tok, self.options.version == .v1_1) orelse return self.errAt(start, "invalid date or time") };
         }
         return self.number(tok, start);
     }
@@ -861,12 +898,20 @@ fn daysInMonth(year: u32, month: u32) u32 {
     };
 }
 
-fn parseTime(s: []const u8, out_len: *usize) ?value.Time {
+/// `HH:MM:SS[.frac]`; with `optional_seconds` (TOML 1.1) also `HH:MM`.
+fn parseTime(s: []const u8, optional_seconds: bool, out_len: *usize) ?value.Time {
     const h = digits(s, 2) orelse return null;
-    if (s.len < 8 or s[2] != ':' or s[5] != ':') return null;
+    if (s.len < 5 or s[2] != ':') return null;
     const m = digits(s[3..], 2) orelse return null;
+    if (h > 23 or m > 59) return null;
+    if (s.len == 5 or s[5] != ':') {
+        if (!optional_seconds) return null;
+        out_len.* = 5;
+        return .{ .hour = @intCast(h), .minute = @intCast(m), .second = 0, .nanosecond = 0 };
+    }
+    if (s.len < 8) return null;
     const sec = digits(s[6..], 2) orelse return null;
-    if (h > 23 or m > 59 or sec > 60) return null; // 60: leap second
+    if (sec > 60) return null; // 60: leap second
     var ns: u32 = 0;
     var i: usize = 8;
     if (i < s.len and s[i] == '.') {
@@ -883,7 +928,7 @@ fn parseTime(s: []const u8, out_len: *usize) ?value.Time {
     return .{ .hour = @intCast(h), .minute = @intCast(m), .second = @intCast(sec), .nanosecond = ns };
 }
 
-fn parseDatetime(tok: []const u8) ?Datetime {
+fn parseDatetime(tok: []const u8, optional_seconds: bool) ?Datetime {
     var dt: Datetime = .{};
     var rest = tok;
     if (looksLikeDate(tok)) {
@@ -898,7 +943,7 @@ fn parseDatetime(tok: []const u8) ?Datetime {
         rest = rest[1..];
     }
     var tlen: usize = 0;
-    dt.time = parseTime(rest, &tlen) orelse return null;
+    dt.time = parseTime(rest, optional_seconds, &tlen) orelse return null;
     rest = rest[tlen..];
     if (rest.len == 0) return dt;
     if (dt.date == null) return null; // a bare time has no offset

@@ -7,18 +7,21 @@ const testing = std.testing;
 
 const TrickleReader = @import("io_tests.zig").TrickleReader;
 
-/// Every document is also parsed one byte at a time through a Reader with no
+const V10: toml.Options = .{ .version = .v1_0 };
+const V11: toml.Options = .{ .version = .v1_1 };
+
+/// Parses with `opts`, and again one byte at a time through a Reader with no
 /// buffer of its own; the result must be identical.
-fn parseOk(src: []const u8) !toml.Document {
+fn parseWith(opts: toml.Options, src: []const u8) !toml.Document {
     var diag: toml.Diagnostic = .{};
-    var doc = toml.Document.parse(testing.allocator, src, .{}, &diag) catch |e| {
+    var doc = toml.Document.parse(testing.allocator, src, opts, &diag) catch |e| {
         std.debug.print("unexpected failure on {s}: {f}\n", .{ src, diag });
         return e;
     };
     errdefer doc.deinit();
     var tr = TrickleReader.init(src, 1, null);
     var diag2: toml.Diagnostic = .{};
-    var doc2 = toml.Document.parseReader(testing.allocator, &tr.interface, .{}, &diag2) catch |e| {
+    var doc2 = toml.Document.parseReader(testing.allocator, &tr.interface, opts, &diag2) catch |e| {
         std.debug.print("one-byte reader failed on {s}: {f}\n", .{ src, diag2 });
         return e;
     };
@@ -31,21 +34,56 @@ fn parseOk(src: []const u8) !toml.Document {
     return doc;
 }
 
-fn expectInvalid(src: []const u8) !void {
+/// A document valid in TOML 1.0. It must also be valid in 1.1 and mean the
+/// same thing; returns the 1.0 result.
+fn parseOk(src: []const u8) !toml.Document {
+    var doc = try parseWith(V10, src);
+    errdefer doc.deinit();
+    var doc11 = try parseWith(V11, src);
+    defer doc11.deinit();
+    const a = try doc.toOwnedString(testing.allocator);
+    defer testing.allocator.free(a);
+    const b = try doc11.toOwnedString(testing.allocator);
+    defer testing.allocator.free(b);
+    try testing.expectEqualStrings(a, b);
+    return doc;
+}
+
+fn rejects(opts: toml.Options, src: []const u8) !bool {
     var diag: toml.Diagnostic = .{};
-    if (toml.Document.parse(testing.allocator, src, .{}, &diag)) |*doc| {
+    if (toml.Document.parse(testing.allocator, src, opts, &diag)) |*doc| {
         var d = doc.*;
         d.deinit();
-        std.debug.print("accepted invalid input: {s}\n", .{src});
-        return error.AcceptedInvalid;
+        return false;
     } else |e| {
         // The error and its position must not depend on how bytes arrive.
         var tr = TrickleReader.init(src, 1, null);
         var diag2: toml.Diagnostic = .{};
-        try testing.expectError(e, toml.Document.parseReader(testing.allocator, &tr.interface, .{}, &diag2));
+        try testing.expectError(e, toml.Document.parseReader(testing.allocator, &tr.interface, opts, &diag2));
         try testing.expectEqual(diag.line, diag2.line);
         try testing.expectEqual(diag.column, diag2.column);
+        return true;
     }
+}
+
+/// Invalid in every TOML version.
+fn expectInvalid(src: []const u8) !void {
+    for ([_]toml.Options{ V10, V11 }) |opts| {
+        if (!try rejects(opts, src)) {
+            std.debug.print("accepted invalid input ({t}): {s}\n", .{ opts.version, src });
+            return error.AcceptedInvalid;
+        }
+    }
+}
+
+/// Invalid in TOML 1.0 but valid in 1.1.
+fn expectOnly11(src: []const u8) !void {
+    if (!try rejects(V10, src)) {
+        std.debug.print("1.0 accepted a 1.1-only input: {s}\n", .{src});
+        return error.AcceptedInvalid;
+    }
+    var doc = try parseWith(V11, src);
+    doc.deinit();
 }
 
 test "key/value basics and comments" {
@@ -305,7 +343,7 @@ test "datetimes: invalid" {
     try expectInvalid("a = 1979-05-27T25:00:00");
     try expectInvalid("a = 1979-05-27T07:60:00");
     try expectInvalid("a = 07:32:00Z");
-    try expectInvalid("a = 07:32");
+    try expectOnly11("a = 07:32");
     try expectInvalid("a = 1979-05-27T07:32:00+0700");
     try expectInvalid("a = 1979-5-27");
     try expectInvalid("a = 07:32:00.");
@@ -398,8 +436,8 @@ test "inline tables" {
 }
 
 test "inline tables: invalid" {
-    try expectInvalid("a = { x = 1,\n y = 2 }");
-    try expectInvalid("a = { x = 1, }");
+    try expectOnly11("a = { x = 1,\n y = 2 }");
+    try expectOnly11("a = { x = 1, }");
     try expectInvalid("a = { x = 1 y = 2 }");
     try expectInvalid("a = { x = 1, x = 2 }");
     try expectInvalid("a = { x = 1 }\n[a]");
@@ -653,4 +691,108 @@ test "parseReader reads from a std.Io.Reader and enforces max_bytes" {
 
     var big: std.Io.Reader = .fixed("a = 1\n");
     try std.testing.expectError(error.LimitExceeded, toml.Document.parseReader(gpa, &big, .{ .max_bytes = 3 }, null));
+}
+
+// ---- TOML 1.1.0 -----------------------------------------------------------
+// Grammar: https://github.com/toml-lang/toml/blob/1.1.0/toml.abnf
+
+test "1.1: inline tables may span lines, hold comments and end with a comma" {
+    const src =
+        \\a = {
+        \\    x = 1, # first
+        \\    y = { z = [1,
+        \\        2] },
+        \\
+        \\}
+        \\b = { k = "v", }
+        \\c = {
+        \\}
+        \\d = { # only a comment
+        \\}
+        \\
+    ;
+    try expectOnly11(src);
+    var doc = try parseWith(V11, src);
+    defer doc.deinit();
+    try testing.expectEqual(@as(i64, 1), doc.root.lookup("a.x").?.integer);
+    try testing.expectEqual(@as(i64, 2), doc.root.lookup("a.y").?.table.getArray("z").?.items.items[1].integer);
+    try testing.expectEqualStrings("v", doc.root.lookup("b.k").?.string);
+    try testing.expectEqual(@as(usize, 0), doc.root.getTable("c").?.count());
+    try testing.expectEqual(@as(usize, 0), doc.root.getTable("d").?.count());
+}
+
+test "1.1: inline tables still reject malformed separators" {
+    try expectInvalid("a = { , }");
+    try expectInvalid("a = { x = 1,, }");
+    try expectInvalid("a = { x = 1 y = 2 }");
+    try expectInvalid("a = { x = 1,\n");
+    try expectInvalid("a = { x = 1, x = 2 }");
+    try expectInvalid("a = { x = 1,\n y }");
+}
+
+test "1.1: \\e and \\xHH escapes" {
+    try expectOnly11("a = \"\\e[0m\"");
+    try expectOnly11("a = \"\\x61\"");
+    var doc = try parseWith(V11,
+        \\a = "csi: \e["
+        \\b = "null: \x00, a: \x61, ÿ: \xFF"
+        \\c = """
+        \\multi \e \x41"""
+        \\d = 'literal \e \x41 stays literal'
+        \\
+    );
+    defer doc.deinit();
+    try testing.expectEqualStrings("csi: \x1b[", doc.root.getString("a").?);
+    try testing.expectEqualStrings("null: \x00, a: a, \xc3\xbf: \xc3\xbf", doc.root.getString("b").?);
+    try testing.expectEqualStrings("multi \x1b A", doc.root.getString("c").?);
+    try testing.expectEqualStrings("literal \\e \\x41 stays literal", doc.root.getString("d").?);
+}
+
+test "1.1: malformed \\x escapes are rejected" {
+    try expectInvalid("a = \"\\x6\"");
+    try expectInvalid("a = \"\\xZZ\"");
+    try expectInvalid("a = \"\\x\"");
+    try expectInvalid("a = \"\\x+1\"");
+    try expectInvalid("a = \"\\E\"");
+}
+
+test "1.1: seconds are optional in times and datetimes" {
+    try expectOnly11("a = 07:32");
+    try expectOnly11("a = 1979-05-27 07:32Z");
+    try expectOnly11("a = 1979-05-27T07:32");
+    try expectOnly11("a = 1979-05-27T07:32-05:00");
+    var doc = try parseWith(V11,
+        \\lt = 07:32
+        \\odt = 1979-05-27 07:32Z
+        \\ldt = 1979-05-27T07:32
+        \\off = 1979-05-27T07:32-05:30
+        \\full = 07:32:10.5
+        \\
+    );
+    defer doc.deinit();
+    const lt = doc.root.get("lt").?.datetime.time.?;
+    try testing.expectEqual(@as(u8, 7), lt.hour);
+    try testing.expectEqual(@as(u8, 32), lt.minute);
+    try testing.expectEqual(@as(u8, 0), lt.second);
+    try testing.expectEqual(@as(i16, 0), doc.root.get("odt").?.datetime.offset_minutes.?);
+    try testing.expect(doc.root.get("ldt").?.datetime.offset_minutes == null);
+    try testing.expectEqual(@as(i16, -330), doc.root.get("off").?.datetime.offset_minutes.?);
+    try testing.expectEqual(@as(u32, 500_000_000), doc.root.get("full").?.datetime.time.?.nanosecond);
+}
+
+test "1.1: optional seconds do not loosen the rest of the time grammar" {
+    try expectInvalid("a = 07:3");
+    try expectInvalid("a = 7:32");
+    try expectInvalid("a = 07:32.5"); // a fraction needs seconds
+    try expectInvalid("a = 1979-05-27T07:32.5Z");
+    try expectInvalid("a = 07:32Z"); // a bare time has no offset
+    try expectInvalid("a = 24:00");
+    try expectInvalid("a = 07:60");
+    try expectInvalid("a = 1979-05-27T07:32:");
+}
+
+test "1.1: version defaults to 1.1" {
+    var doc = try toml.Document.parse(testing.allocator, "a = 07:32\nb = \"\\e\"\n", .{}, null);
+    doc.deinit();
+    try testing.expectEqual(toml.Version.v1_1, (toml.Options{}).version);
 }

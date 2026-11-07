@@ -22,6 +22,7 @@ pub const Date = @import("value.zig").Date;
 pub const Time = @import("value.zig").Time;
 pub const ParseError = @import("parser.zig").Error;
 pub const Options = @import("parser.zig").Options;
+pub const Version = @import("parser.zig").Version;
 pub const Diagnostic = @import("parser.zig").Diagnostic;
 pub const ParseReaderError = ParseError || error{ReadFailed};
 pub const WriteError = @import("writer.zig").Error;
