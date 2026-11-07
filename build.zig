@@ -42,4 +42,15 @@ pub fn build(b: *std.Build) void {
     }));
     const bench_exe = b.addExecutable(.{ .name = "toml-bench", .root_module = bench_mod });
     bench_step.dependOn(&b.addRunArtifact(bench_exe).step);
+
+    // A command line parser for comparing builds with `poop` (see the file).
+    const cli_mod = b.createModule(.{
+        .root_source_file = b.path("bench/parse_file.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    cli_mod.addImport("toml", bench_mod.import_table.get("toml").?);
+    const cli_exe = b.addExecutable(.{ .name = "toml-parse", .root_module = cli_mod });
+    const cli_step = b.step("cli", "Build zig-out/bin/toml-parse for comparing with poop");
+    cli_step.dependOn(&b.addInstallArtifact(cli_exe, .{}).step);
 }

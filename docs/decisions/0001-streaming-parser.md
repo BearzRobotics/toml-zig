@@ -79,6 +79,21 @@ error later in it (previously UTF-8 was checked first). The whole conformance
 suite is also run through a one-byte reader and must give the same value or
 the same error and line/column.
 
+Whole-process comparison with `poop` (8 MB file, old slice parser vs new, via
+`zig build cli`; Linux perf counters on WSL2):
+
+| | wall | peak RSS | CPU cycles | instructions | branch misses |
+|---|---|---|---|---|---|
+| old, slice | 222 ms | 149 MB | 548 M | 764 M | 373 K |
+| new, slice | 176 ms (-21%) | 128 MB (-15%) | 411 M (-25%) | 1.09 G (+42%) | 551 K (+48%) |
+| new, 4 KiB file Reader | 174 ms (-22%) | 120 MB (-20%) | 409 M (-25%) | 1.09 G (+42%) | 660 K (+77%) |
+
+As predicted, the streaming parser executes more instructions (per-byte Reader
+access, UTF-8 and line tracking) and misses more branches, yet finishes sooner
+because it needs fewer cycles and far less memory: strings no longer leave
+garbage in the arena, and the input is not scanned twice. Streaming from a
+4 KiB-buffered file also avoids holding the file in memory.
+
 Not measured: a worst-case unbuffered one-byte reader (correctness is tested,
 speed is not).
 
