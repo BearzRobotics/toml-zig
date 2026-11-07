@@ -118,4 +118,5 @@ pub const Document = struct {
 
 test {
     _ = @import("tests.zig");
+    _ = @import("io_tests.zig");
 }
