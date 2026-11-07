@@ -46,21 +46,23 @@ pub const Document = struct {
     pub fn parse(gpa: Allocator, source: []const u8, options: Options, diag: ?*Diagnostic) ParseError!Document {
         var doc = try init(gpa);
         errdefer doc.deinit();
-        try @import("parser.zig").parse(doc.arena.allocator(), doc.root, source, options, diag);
+        var r: std.Io.Reader = .fixed(source);
+        @import("parser.zig").parse(gpa, doc.arena.allocator(), doc.root, &r, options, diag) catch |e| switch (e) {
+            error.ReadFailed => unreachable, // a fixed reader cannot fail
+            else => |parse_err| return parse_err,
+        };
         return doc;
     }
 
-    /// Reads `r` to its end, then parses it like `parse`. Fails with
-    /// `error.LimitExceeded` once the input passes `options.max_bytes`, without
-    /// buffering more than that.
+    /// Parses TOML read incrementally from `r`; the input is never held in
+    /// memory as a whole. Fails with `error.LimitExceeded` once more than
+    /// `options.max_bytes` have been consumed, and with `error.ReadFailed` if
+    /// `r` does.
     pub fn parseReader(gpa: Allocator, r: *std.Io.Reader, options: Options, diag: ?*Diagnostic) ParseReaderError!Document {
-        const source = r.allocRemaining(gpa, .limited(options.max_bytes)) catch |e| switch (e) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.ReadFailed => return error.ReadFailed,
-            error.StreamTooLong => return error.LimitExceeded,
-        };
-        defer gpa.free(source);
-        return parse(gpa, source, options, diag);
+        var doc = try init(gpa);
+        errdefer doc.deinit();
+        try @import("parser.zig").parse(gpa, doc.arena.allocator(), doc.root, r, options, diag);
+        return doc;
     }
 
     pub fn deinit(self: *Document) void {

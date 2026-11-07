@@ -5,12 +5,30 @@ const std = @import("std");
 const toml = @import("root.zig");
 const testing = std.testing;
 
+const TrickleReader = @import("io_tests.zig").TrickleReader;
+
+/// Every document is also parsed one byte at a time through a Reader with no
+/// buffer of its own; the result must be identical.
 fn parseOk(src: []const u8) !toml.Document {
     var diag: toml.Diagnostic = .{};
-    return toml.Document.parse(testing.allocator, src, .{}, &diag) catch |e| {
+    var doc = toml.Document.parse(testing.allocator, src, .{}, &diag) catch |e| {
         std.debug.print("unexpected failure on {s}: {f}\n", .{ src, diag });
         return e;
     };
+    errdefer doc.deinit();
+    var tr = TrickleReader.init(src, 1, null);
+    var diag2: toml.Diagnostic = .{};
+    var doc2 = toml.Document.parseReader(testing.allocator, &tr.interface, .{}, &diag2) catch |e| {
+        std.debug.print("one-byte reader failed on {s}: {f}\n", .{ src, diag2 });
+        return e;
+    };
+    defer doc2.deinit();
+    const a = try doc.toOwnedString(testing.allocator);
+    defer testing.allocator.free(a);
+    const b = try doc2.toOwnedString(testing.allocator);
+    defer testing.allocator.free(b);
+    try testing.expectEqualStrings(a, b);
+    return doc;
 }
 
 fn expectInvalid(src: []const u8) !void {
@@ -20,7 +38,14 @@ fn expectInvalid(src: []const u8) !void {
         d.deinit();
         std.debug.print("accepted invalid input: {s}\n", .{src});
         return error.AcceptedInvalid;
-    } else |_| {}
+    } else |e| {
+        // The error and its position must not depend on how bytes arrive.
+        var tr = TrickleReader.init(src, 1, null);
+        var diag2: toml.Diagnostic = .{};
+        try testing.expectError(e, toml.Document.parseReader(testing.allocator, &tr.interface, .{}, &diag2));
+        try testing.expectEqual(diag.line, diag2.line);
+        try testing.expectEqual(diag.column, diag2.column);
+    }
 }
 
 test "key/value basics and comments" {

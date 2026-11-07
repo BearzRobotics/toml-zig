@@ -26,14 +26,14 @@ const sample =
 
 /// A Reader over `data` that hands out at most `chunk` bytes per `stream`
 /// call and, if `fail_after` is set, fails once that many bytes were given.
-const TrickleReader = struct {
+pub const TrickleReader = struct {
     data: []const u8,
     pos: usize = 0,
     chunk: usize,
     fail_after: ?usize = null,
     interface: Io.Reader,
 
-    fn init(data: []const u8, chunk: usize, fail_after: ?usize) TrickleReader {
+    pub fn init(data: []const u8, chunk: usize, fail_after: ?usize) TrickleReader {
         return .{
             .data = data,
             .chunk = chunk,
@@ -48,7 +48,7 @@ const TrickleReader = struct {
         if (self.pos >= self.data.len) return error.EndOfStream;
         var n = @min(self.chunk, self.data.len - self.pos);
         if (self.fail_after) |f| n = @min(n, f - self.pos);
-        const give = @min(n, @intFromEnum(limit));
+        const give = @min(n, @backingInt(limit));
         try w.writeAll(self.data[self.pos..][0..give]);
         self.pos += give;
         return give;
@@ -155,5 +155,49 @@ test "write reports WriteFailed wherever the writer dies" {
             break :blk true;
         };
         try testing.expect(failed);
+    }
+}
+
+test "invalid UTF-8 is rejected, however the bytes arrive" {
+    const bad = [_][]const u8{
+        "a = \"\xff\"",
+        "a = \"\xc0\x80\"", // overlong
+        "a = \"\xed\xa0\x80\"", // surrogate
+        "a = \"\xf4\x90\x80\x80\"", // above U+10FFFF
+        "a = \"\xe2\x82\"", // truncated, then closing quote
+        "a = 1 # \xe2\x82", // truncated at end of input
+    };
+    for (bad) |src| {
+        for ([_]usize{ 1, 2, 4096 }) |chunk| {
+            var tr = TrickleReader.init(src, chunk, null);
+            try testing.expectError(error.InvalidUtf8, toml.Document.parseReader(testing.allocator, &tr.interface, .{}, null));
+        }
+        try testing.expectError(error.InvalidUtf8, toml.Document.parse(testing.allocator, src, .{}, null));
+    }
+}
+
+test "valid multi-byte text and a BOM survive one-byte reads" {
+    const gpa = testing.allocator;
+    const src = "\xEF\xBB\xBFk = \"\\u00e9 \xc3\xa9 \xe2\x82\xac \xf0\x9f\x98\x80\"\n";
+    var tr = TrickleReader.init(src, 1, null);
+    var doc = try toml.Document.parseReader(gpa, &tr.interface, .{}, null);
+    defer doc.deinit();
+    try testing.expectEqualStrings("\xc3\xa9 \xc3\xa9 \xe2\x82\xac \xf0\x9f\x98\x80", doc.root.getString("k").?);
+}
+
+test "empty and tiny inputs" {
+    for ([_][]const u8{ "", "\n", "a", "a=1", "#" }) |src| {
+        var tr = TrickleReader.init(src, 1, null);
+        const via_reader = toml.Document.parseReader(testing.allocator, &tr.interface, .{}, null);
+        const via_slice = toml.Document.parse(testing.allocator, src, .{}, null);
+        try testing.expectEqual(std.meta.isError(via_slice), std.meta.isError(via_reader));
+        if (via_reader) |d| {
+            var dd = d;
+            dd.deinit();
+        } else |_| {}
+        if (via_slice) |d| {
+            var dd = d;
+            dd.deinit();
+        } else |_| {}
     }
 }

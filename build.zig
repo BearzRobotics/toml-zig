@@ -32,4 +32,3 @@ pub fn build(b: *std.Build) void {
     const bench_exe = b.addExecutable(.{ .name = "toml-bench", .root_module = bench_mod });
     bench_step.dependOn(&b.addRunArtifact(bench_exe).step);
 }
-

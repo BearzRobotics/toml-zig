@@ -1,18 +1,25 @@
 //! TOML 1.0.0 parser. Reference: https://toml.io/en/v1.0.0 (ABNF in the
 //! toml-lang/toml repository, toml.abnf at tag v1.0.0).
 //!
-//! The parser works on a UTF-8 byte slice and allocates everything from the
-//! arena it is given. On any error it stops at the first problem and, if a
-//! `Diagnostic` was supplied, records a 1-based line/column and a message.
+//! The parser pulls bytes from a `std.Io.Reader` through `Source`, which
+//! offers a few bytes of lookahead and tracks line, column, input size and
+//! UTF-8 validity as bytes are consumed. It never needs the whole input in
+//! memory. Parsed values are allocated from the arena it is given; text being
+//! assembled (strings, tokens) goes through one reused scratch buffer.
+//! On any error it stops at the first problem and, if a `Diagnostic` was
+//! supplied, records a 1-based line/column and a message.
+//! See docs/decisions/0001-streaming-parser.md.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const value = @import("value.zig");
 const Value = value.Value;
 const Table = value.Table;
 const Array = value.Array;
 const Datetime = value.Datetime;
 
+/// Errors that do not depend on where the bytes come from.
 pub const Error = error{
     /// Malformed TOML, or a valid-looking construct TOML forbids (duplicate key, ...).
     Syntax,
@@ -22,6 +29,9 @@ pub const Error = error{
     LimitExceeded,
     OutOfMemory,
 };
+
+/// `Error` plus a failure of the underlying `Reader`.
+pub const ReadError = Error || error{ReadFailed};
 
 pub const Options = struct {
     /// Maximum nesting of arrays plus inline tables. Bounds recursion depth.
@@ -36,139 +46,247 @@ pub const Diagnostic = struct {
     /// Static string; valid for the program's lifetime.
     message: []const u8 = "",
 
-    pub fn format(self: Diagnostic, w: *std.Io.Writer) std.Io.Writer.Error!void {
+    pub fn format(self: Diagnostic, w: *Io.Writer) Io.Writer.Error!void {
         try w.print("{d}:{d}: {s}", .{ self.line, self.column, self.message });
     }
 };
 
-pub fn parse(arena: Allocator, root: *Table, src: []const u8, options: Options, diag: ?*Diagnostic) Error!void {
-    if (src.len > options.max_bytes) return fail0(diag, "input too large", error.LimitExceeded);
-    if (!std.unicode.utf8ValidateSlice(src)) {
-        // Locate the line for the message; cheap, and only on the error path.
-        return failAt(diag, src, firstInvalidUtf8(src), "invalid UTF-8", error.InvalidUtf8);
+/// The most bytes the parser ever looks ahead (a BOM). A `Reader` buffer
+/// smaller than this is wrapped in a larger one; see `parse`.
+const max_lookahead = 4;
+
+/// A 1-based position, remembered so an error can point at where a construct
+/// began rather than where it was found to be wrong.
+const Loc = struct { line: usize, col: usize };
+
+/// Parses TOML from `r` into `root`. `gpa` is used only for the scratch
+/// buffer; everything that outlives the call is allocated from `arena`.
+pub fn parse(gpa: Allocator, arena: Allocator, root: *Table, r: *Io.Reader, options: Options, diag: ?*Diagnostic) ReadError!void {
+    // Lookahead needs the reader to buffer a few bytes. If the caller's reader
+    // cannot, put a small buffer in front of it.
+    var wrap_buf: [2 * max_lookahead]u8 = undefined;
+    var wrapped: Io.Reader.Limited = undefined;
+    var reader = r;
+    if (r.buffer.len < max_lookahead) {
+        wrapped = .init(r, .unlimited, &wrap_buf);
+        reader = &wrapped.interface;
     }
-    var p: Parser = .{ .src = src, .pos = 0, .arena = arena, .root = root, .current = root, .options = options, .diag = diag };
-    if (std.mem.startsWith(u8, src, "\xEF\xBB\xBF")) p.pos = 3;
+
+    var p: Parser = .{
+        .s = .{ .r = reader, .max_bytes = options.max_bytes, .diag = diag },
+        .gpa = gpa,
+        .arena = arena,
+        .root = root,
+        .current = root,
+        .options = options,
+    };
+    defer p.scratch.deinit(gpa);
+    if (try p.s.peekAt(0) == 0xEF and try p.s.peekAt(1) == 0xBB and try p.s.peekAt(2) == 0xBF) {
+        for (0..3) |_| try p.s.bump();
+    }
     root.kind = .explicit;
     try p.document();
+    try p.s.finish();
 }
 
-fn fail0(diag: ?*Diagnostic, msg: []const u8, err: Error) Error {
-    if (diag) |d| d.* = .{ .line = 1, .column = 1, .message = msg };
-    return err;
-}
+/// Byte source over a `Reader`: lookahead, consumption, and bookkeeping.
+/// Every byte the parser accepts goes through `bump`, which is what makes the
+/// line/column, size and UTF-8 checks complete.
+const Source = struct {
+    r: *Io.Reader,
+    max_bytes: usize,
+    diag: ?*Diagnostic,
+    line: usize = 1,
+    col: usize = 1,
+    consumed: usize = 0,
+    /// Continuation bytes still owed by the current multi-byte UTF-8 sequence,
+    /// and the range the next one must fall in (narrowed after some lead bytes
+    /// to reject overlong forms, surrogates and values above U+10FFFF).
+    need: u2 = 0,
+    lo: u8 = 0x80,
+    hi: u8 = 0xBF,
 
-fn failAt(diag: ?*Diagnostic, src: []const u8, pos: usize, msg: []const u8, err: Error) Error {
-    if (diag) |d| {
-        var line: usize = 1;
-        var col: usize = 1;
-        for (src[0..@min(pos, src.len)]) |c| {
-            if (c == '\n') {
-                line += 1;
-                col = 1;
-            } else if (c & 0xC0 != 0x80) col += 1; // count code points, not bytes
+    fn loc(self: *const Source) Loc {
+        return .{ .line = self.line, .col = self.col };
+    }
+
+    fn fail(self: *Source, at: Loc, msg: []const u8, err: Error) Error {
+        if (self.diag) |d| d.* = .{ .line = at.line, .column = at.col, .message = msg };
+        return err;
+    }
+
+    /// The next byte, or null at end of input.
+    fn peek(self: *Source) ReadError!?u8 {
+        const r = self.r;
+        if (r.seek < r.end) return r.buffer[r.seek];
+        return self.peekAt(0);
+    }
+
+    /// The byte `i` places ahead (`i < max_lookahead`), or null if the input
+    /// ends first.
+    fn peekAt(self: *Source, i: usize) ReadError!?u8 {
+        std.debug.assert(i < max_lookahead);
+        const r = self.r;
+        if (r.seek + i < r.end) return r.buffer[r.seek + i];
+        const bytes = r.peek(i + 1) catch |e| switch (e) {
+            error.EndOfStream => return null,
+            error.ReadFailed => return error.ReadFailed,
+        };
+        return bytes[i];
+    }
+
+    /// Consumes the byte `peek` just returned.
+    fn bump(self: *Source) ReadError!void {
+        const r = self.r;
+        const c = r.buffer[r.seek];
+        const at = self.loc();
+        r.toss(1);
+        self.consumed += 1;
+        if (self.consumed > self.max_bytes) return self.fail(at, "input too large", error.LimitExceeded);
+
+        if (self.need > 0) {
+            if (c < self.lo or c > self.hi) return self.fail(at, "invalid UTF-8", error.InvalidUtf8);
+            self.need -= 1;
+            self.lo = 0x80;
+            self.hi = 0xBF;
+            return; // continuation bytes do not advance the column
         }
-        d.* = .{ .line = line, .column = col, .message = msg };
+        if (c < 0x80) {
+            if (c == '\n') {
+                self.line += 1;
+                self.col = 1;
+            } else self.col += 1;
+            return;
+        }
+        switch (c) {
+            0xC2...0xDF => self.need = 1,
+            0xE0 => {
+                self.need = 2;
+                self.lo = 0xA0;
+            },
+            0xE1...0xEC, 0xEE, 0xEF => self.need = 2,
+            0xED => {
+                self.need = 2;
+                self.hi = 0x9F;
+            },
+            0xF0 => {
+                self.need = 3;
+                self.lo = 0x90;
+            },
+            0xF1...0xF3 => self.need = 3,
+            0xF4 => {
+                self.need = 3;
+                self.hi = 0x8F;
+            },
+            else => return self.fail(at, "invalid UTF-8", error.InvalidUtf8),
+        }
+        self.col += 1; // one column per code point
     }
-    return err;
-}
 
-fn firstInvalidUtf8(src: []const u8) usize {
-    var i: usize = 0;
-    while (i < src.len) {
-        const n = std.unicode.utf8ByteSequenceLength(src[i]) catch return i;
-        if (i + n > src.len or !std.unicode.utf8ValidateSlice(src[i .. i + n])) return i;
-        i += n;
+    /// Call once the input is exhausted: a multi-byte sequence must not be cut short.
+    fn finish(self: *Source) Error!void {
+        if (self.need != 0) return self.fail(self.loc(), "invalid UTF-8", error.InvalidUtf8);
     }
-    return src.len;
-}
+};
 
 const Parser = struct {
-    src: []const u8,
-    pos: usize,
+    s: Source,
+    gpa: Allocator,
     arena: Allocator,
     root: *Table,
     current: *Table,
     options: Options,
-    diag: ?*Diagnostic,
+    /// Text being assembled: bare keys, string bodies, scalar tokens.
+    scratch: std.ArrayList(u8) = .empty,
     depth: u32 = 0,
 
     fn err(self: *Parser, msg: []const u8) Error {
-        return failAt(self.diag, self.src, self.pos, msg, error.Syntax);
+        return self.s.fail(self.s.loc(), msg, error.Syntax);
     }
 
-    fn errAt(self: *Parser, pos: usize, msg: []const u8) Error {
-        return failAt(self.diag, self.src, pos, msg, error.Syntax);
+    fn errAt(self: *Parser, at: Loc, msg: []const u8) Error {
+        return self.s.fail(at, msg, error.Syntax);
     }
 
-    fn peek(self: *const Parser) ?u8 {
-        return if (self.pos < self.src.len) self.src[self.pos] else null;
+    /// Copies the scratch buffer into the arena.
+    fn takeScratch(self: *Parser) Error![]const u8 {
+        return self.arena.dupe(u8, self.scratch.items);
     }
 
-    fn startsWith(self: *const Parser, s: []const u8) bool {
-        return std.mem.startsWith(u8, self.src[self.pos..], s);
+    /// Consumes the next byte only if it is `c`.
+    fn eat(self: *Parser, c: u8) ReadError!bool {
+        if ((try self.s.peek()) != c) return false;
+        try self.s.bump();
+        return true;
+    }
+
+    /// Are the next three bytes all `c`?
+    fn peekTriple(self: *Parser, c: u8) ReadError!bool {
+        return (try self.s.peek()) == c and (try self.s.peekAt(1)) == c and (try self.s.peekAt(2)) == c;
     }
 
     // ---- lexical helpers -------------------------------------------------
 
-    fn skipWs(self: *Parser) void {
-        while (self.peek()) |c| {
+    fn skipWs(self: *Parser) ReadError!void {
+        while (try self.s.peek()) |c| {
             if (c != ' ' and c != '\t') break;
-            self.pos += 1;
+            try self.s.bump();
         }
     }
 
     /// Consumes a newline (LF or CRLF) if present.
-    fn eatNewline(self: *Parser) bool {
-        if (self.peek() == '\n') {
-            self.pos += 1;
+    fn eatNewline(self: *Parser) ReadError!bool {
+        const c = (try self.s.peek()) orelse return false;
+        if (c == '\n') {
+            try self.s.bump();
             return true;
         }
-        if (self.startsWith("\r\n")) {
-            self.pos += 2;
+        if (c == '\r' and (try self.s.peekAt(1)) == '\n') {
+            try self.s.bump();
+            try self.s.bump();
             return true;
         }
         return false;
     }
 
     /// Comment body: any char except control characters other than tab (ABNF `non-eol`).
-    fn skipComment(self: *Parser) Error!void {
-        if (self.peek() != '#') return;
-        while (self.peek()) |c| {
+    fn skipComment(self: *Parser) ReadError!void {
+        if ((try self.s.peek()) != '#') return;
+        while (try self.s.peek()) |c| {
             if (c == '\n') break;
             if (c == '\r') {
-                if (self.pos + 1 < self.src.len and self.src[self.pos + 1] == '\n') break;
+                if ((try self.s.peekAt(1)) == '\n') break;
                 return self.err("bare carriage return in comment");
             }
             if (isForbiddenControl(c)) return self.err("control character in comment");
-            self.pos += 1;
+            try self.s.bump();
         }
     }
 
     /// Whitespace, comments and newlines, as between top-level expressions.
-    fn skipBlank(self: *Parser) Error!void {
+    fn skipBlank(self: *Parser) ReadError!void {
         while (true) {
-            self.skipWs();
+            try self.skipWs();
             try self.skipComment();
-            if (!self.eatNewline()) break;
+            if (!try self.eatNewline()) break;
         }
     }
 
-    fn expectEndOfLine(self: *Parser) Error!void {
-        self.skipWs();
+    fn expectEndOfLine(self: *Parser) ReadError!void {
+        try self.skipWs();
         try self.skipComment();
-        if (self.pos >= self.src.len) return;
-        if (!self.eatNewline()) return self.err("expected end of line");
+        if ((try self.s.peek()) == null) return;
+        if (!try self.eatNewline()) return self.err("expected end of line");
     }
 
     // ---- document structure ---------------------------------------------
 
-    fn document(self: *Parser) Error!void {
+    fn document(self: *Parser) ReadError!void {
         while (true) {
             try self.skipBlank();
-            const c = self.peek() orelse return;
+            const c = (try self.s.peek()) orelse return;
             if (c == '[') {
-                if (self.startsWith("[[")) try self.arrayTableHeader() else try self.tableHeader();
+                if ((try self.s.peekAt(1)) == '[') try self.arrayTableHeader() else try self.tableHeader();
             } else {
                 try self.keyValue(self.current);
             }
@@ -176,14 +294,13 @@ const Parser = struct {
         }
     }
 
-    fn tableHeader(self: *Parser) Error!void {
-        const start = self.pos;
-        self.pos += 1; // '['
-        self.skipWs();
+    fn tableHeader(self: *Parser) ReadError!void {
+        const start = self.s.loc();
+        try self.s.bump(); // '['
+        try self.skipWs();
         const keys = try self.key();
-        self.skipWs();
-        if (self.peek() != ']') return self.err("expected ']'");
-        self.pos += 1;
+        try self.skipWs();
+        if (!try self.eat(']')) return self.err("expected ']'");
 
         const parent = try self.walk(self.root, keys[0 .. keys.len - 1], start);
         const last = keys[keys.len - 1];
@@ -203,14 +320,14 @@ const Parser = struct {
         }
     }
 
-    fn arrayTableHeader(self: *Parser) Error!void {
-        const start = self.pos;
-        self.pos += 2; // '[['
-        self.skipWs();
+    fn arrayTableHeader(self: *Parser) ReadError!void {
+        const start = self.s.loc();
+        try self.s.bump(); // '['
+        try self.s.bump(); // '['
+        try self.skipWs();
         const keys = try self.key();
-        self.skipWs();
-        if (!self.startsWith("]]")) return self.err("expected ']]'");
-        self.pos += 2;
+        try self.skipWs();
+        if (!try self.eat(']') or !try self.eat(']')) return self.err("expected ']]'");
 
         const parent = try self.walk(self.root, keys[0 .. keys.len - 1], start);
         const last = keys[keys.len - 1];
@@ -234,21 +351,21 @@ const Parser = struct {
 
     /// Follows header path segments, creating implicit tables. Through an array
     /// of tables it descends into the most recently added element.
-    fn walk(self: *Parser, from: *Table, segs: []const []const u8, pos: usize) Error!*Table {
+    fn walk(self: *Parser, from: *Table, segs: []const []const u8, at: Loc) Error!*Table {
         var cur = from;
         for (segs) |seg| {
             if (cur.getPtr(seg)) |existing| {
                 switch (existing.*) {
                     .table => |t| {
-                        if (t.kind == .inline_table) return self.errAt(pos, "cannot extend an inline table");
+                        if (t.kind == .inline_table) return self.errAt(at, "cannot extend an inline table");
                         cur = t;
                     },
                     .array => |a| {
                         if (!a.is_table_array or a.items.items.len == 0)
-                            return self.errAt(pos, "cannot extend a static array");
+                            return self.errAt(at, "cannot extend a static array");
                         cur = a.items.items[a.items.items.len - 1].table;
                     },
-                    else => return self.errAt(pos, "key already defined as a non-table value"),
+                    else => return self.errAt(at, "key already defined as a non-table value"),
                 }
             } else {
                 const t = try self.newTable(.implicit);
@@ -268,13 +385,12 @@ const Parser = struct {
     // ---- keys and values -------------------------------------------------
 
     /// key = value, where key may be dotted. Inserts into `table`.
-    fn keyValue(self: *Parser, table: *Table) Error!void {
-        const start = self.pos;
+    fn keyValue(self: *Parser, table: *Table) ReadError!void {
+        const start = self.s.loc();
         const keys = try self.key();
-        self.skipWs();
-        if (self.peek() != '=') return self.err("expected '=' after key");
-        self.pos += 1;
-        self.skipWs();
+        try self.skipWs();
+        if (!try self.eat('=')) return self.err("expected '=' after key");
+        try self.skipWs();
 
         // Dotted keys create tables that only dotted keys may extend.
         var cur = table;
@@ -300,41 +416,40 @@ const Parser = struct {
     }
 
     /// Parses `simple-key *( dot-sep simple-key )`.
-    fn key(self: *Parser) Error![]const []const u8 {
+    fn key(self: *Parser) ReadError![]const []const u8 {
         var segs: std.ArrayList([]const u8) = .empty;
         while (true) {
-            self.skipWs();
+            try self.skipWs();
             try segs.append(self.arena, try self.simpleKey());
-            self.skipWs();
-            if (self.peek() == '.') {
-                self.pos += 1;
-            } else break;
+            try self.skipWs();
+            if (!try self.eat('.')) break;
         }
         return segs.items;
     }
 
-    fn simpleKey(self: *Parser) Error![]const u8 {
-        const c = self.peek() orelse return self.err("expected key");
+    fn simpleKey(self: *Parser) ReadError![]const u8 {
+        const c = (try self.s.peek()) orelse return self.err("expected key");
         if (c == '"') return self.basicString();
         if (c == '\'') return self.literalString();
-        const start = self.pos;
-        while (self.peek()) |b| {
+        self.scratch.clearRetainingCapacity();
+        while (try self.s.peek()) |b| {
             if (!isBareKeyChar(b)) break;
-            self.pos += 1;
+            try self.scratch.append(self.gpa, b);
+            try self.s.bump();
         }
-        if (self.pos == start) return self.err("expected key");
-        return try self.arena.dupe(u8, self.src[start..self.pos]);
+        if (self.scratch.items.len == 0) return self.err("expected key");
+        return self.takeScratch();
     }
 
-    fn val(self: *Parser) Error!Value {
-        const c = self.peek() orelse return self.err("expected value");
+    fn val(self: *Parser) ReadError!Value {
+        const c = (try self.s.peek()) orelse return self.err("expected value");
         switch (c) {
             '"' => {
-                if (self.startsWith("\"\"\"")) return .{ .string = try self.multilineBasic() };
+                if (try self.peekTriple('"')) return .{ .string = try self.multilineBasic() };
                 return .{ .string = try self.basicString() };
             },
             '\'' => {
-                if (self.startsWith("'''")) return .{ .string = try self.multilineLiteral() };
+                if (try self.peekTriple('\'')) return .{ .string = try self.multilineLiteral() };
                 return .{ .string = try self.literalString() };
             },
             '[' => return self.arrayValue(),
@@ -345,27 +460,24 @@ const Parser = struct {
 
     fn enter(self: *Parser) Error!void {
         if (self.depth >= self.options.max_depth) {
-            return failAt(self.diag, self.src, self.pos, "nesting too deep", error.LimitExceeded);
+            return self.s.fail(self.s.loc(), "nesting too deep", error.LimitExceeded);
         }
         self.depth += 1;
     }
 
-    fn arrayValue(self: *Parser) Error!Value {
+    fn arrayValue(self: *Parser) ReadError!Value {
         try self.enter();
         defer self.depth -= 1;
-        self.pos += 1; // '['
+        try self.s.bump(); // '['
         const a = try self.arena.create(Array);
         a.* = .{};
         while (true) {
             try self.skipBlank();
-            if (self.peek() == ']') {
-                self.pos += 1;
-                break;
-            }
+            if (try self.eat(']')) break;
             try a.items.append(self.arena, try self.val());
             try self.skipBlank();
-            switch (self.peek() orelse return self.err("unterminated array")) {
-                ',' => self.pos += 1,
+            switch ((try self.s.peek()) orelse return self.err("unterminated array")) {
+                ',' => try self.s.bump(),
                 ']' => {},
                 else => return self.err("expected ',' or ']' in array"),
             }
@@ -373,28 +485,25 @@ const Parser = struct {
         return .{ .array = a };
     }
 
-    fn inlineTable(self: *Parser) Error!Value {
+    fn inlineTable(self: *Parser) ReadError!Value {
         try self.enter();
         defer self.depth -= 1;
-        self.pos += 1; // '{'
+        try self.s.bump(); // '{'
         const t = try self.newTable(.inline_table);
-        self.skipWs();
-        if (self.peek() == '}') {
-            self.pos += 1;
-            return .{ .table = t };
-        }
+        try self.skipWs();
+        if (try self.eat('}')) return .{ .table = t };
         while (true) {
-            self.skipWs();
+            try self.skipWs();
             try self.keyValue(t);
-            self.skipWs();
-            switch (self.peek() orelse return self.err("unterminated inline table")) {
+            try self.skipWs();
+            switch ((try self.s.peek()) orelse return self.err("unterminated inline table")) {
                 ',' => {
-                    self.pos += 1;
-                    self.skipWs();
-                    if (self.peek() == '}') return self.err("trailing comma in inline table");
+                    try self.s.bump();
+                    try self.skipWs();
+                    if ((try self.s.peek()) == '}') return self.err("trailing comma in inline table");
                 },
                 '}' => {
-                    self.pos += 1;
+                    try self.s.bump();
                     break;
                 },
                 else => return self.err("expected ',' or '}' in inline table"),
@@ -405,182 +514,193 @@ const Parser = struct {
 
     // ---- strings ---------------------------------------------------------
 
-    fn basicString(self: *Parser) Error![]const u8 {
-        self.pos += 1; // opening quote
-        var out: std.ArrayList(u8) = .empty;
+    fn basicString(self: *Parser) ReadError![]const u8 {
+        try self.s.bump(); // opening quote
+        self.scratch.clearRetainingCapacity();
         while (true) {
-            const c = self.peek() orelse return self.err("unterminated string");
+            const c = (try self.s.peek()) orelse return self.err("unterminated string");
             switch (c) {
                 '"' => {
-                    self.pos += 1;
-                    return out.items;
+                    try self.s.bump();
+                    return self.takeScratch();
                 },
-                '\\' => try self.escape(&out),
+                '\\' => {
+                    const esc = self.s.loc();
+                    try self.s.bump();
+                    try self.escape(esc);
+                },
                 '\n', '\r' => return self.err("newline in single-line string"),
                 else => {
                     if (isForbiddenControl(c)) return self.err("control character in string");
-                    try out.append(self.arena, c);
-                    self.pos += 1;
+                    try self.scratch.append(self.gpa, c);
+                    try self.s.bump();
                 },
             }
         }
     }
 
-    fn literalString(self: *Parser) Error![]const u8 {
-        self.pos += 1;
-        const start = self.pos;
+    fn literalString(self: *Parser) ReadError![]const u8 {
+        try self.s.bump(); // opening quote
+        self.scratch.clearRetainingCapacity();
         while (true) {
-            const c = self.peek() orelse return self.err("unterminated string");
+            const c = (try self.s.peek()) orelse return self.err("unterminated string");
             if (c == '\'') break;
             if (c == '\n' or c == '\r') return self.err("newline in single-line string");
             if (isForbiddenControl(c)) return self.err("control character in string");
-            self.pos += 1;
+            try self.scratch.append(self.gpa, c);
+            try self.s.bump();
         }
-        const s = try self.arena.dupe(u8, self.src[start..self.pos]);
-        self.pos += 1;
-        return s;
+        try self.s.bump(); // closing quote
+        return self.takeScratch();
     }
 
-    fn multilineBasic(self: *Parser) Error![]const u8 {
-        self.pos += 3;
-        _ = self.eatNewline(); // a newline right after the opening delimiter is trimmed
-        var out: std.ArrayList(u8) = .empty;
+    fn multilineBasic(self: *Parser) ReadError![]const u8 {
+        for (0..3) |_| try self.s.bump();
+        _ = try self.eatNewline(); // a newline right after the opening delimiter is trimmed
+        self.scratch.clearRetainingCapacity();
         while (true) {
-            const c = self.peek() orelse return self.err("unterminated multi-line string");
+            const c = (try self.s.peek()) orelse return self.err("unterminated multi-line string");
             switch (c) {
-                '"' => {
-                    const run = self.quoteRun('"');
-                    if (run >= 3) {
-                        if (run > 5) return self.err("too many quotes in multi-line string");
-                        try out.appendNTimes(self.arena, '"', run - 3);
-                        self.pos += run;
-                        return out.items;
-                    }
-                    try out.appendNTimes(self.arena, '"', run);
-                    self.pos += run;
-                },
+                '"' => if (try self.quoteRun('"')) |s| return s,
                 '\\' => {
-                    // A backslash before optional whitespace and a newline removes
-                    // the newline and all following whitespace.
-                    var q = self.pos + 1;
-                    while (q < self.src.len and (self.src[q] == ' ' or self.src[q] == '\t')) q += 1;
-                    if (q < self.src.len and (self.src[q] == '\n' or (self.src[q] == '\r' and q + 1 < self.src.len and self.src[q + 1] == '\n'))) {
-                        self.pos = q;
-                        while (self.peek()) |w| {
+                    const esc = self.s.loc();
+                    try self.s.bump();
+                    const n = (try self.s.peek()) orelse return self.err("unterminated escape");
+                    if (n == ' ' or n == '\t' or n == '\n' or n == '\r') {
+                        // A backslash before optional whitespace and a newline
+                        // removes the newline and all following whitespace.
+                        // (No valid escape starts with these bytes, so this is
+                        // either a line continuation or an error.)
+                        try self.skipWs();
+                        if (!try self.eatNewline()) return self.errAt(esc, "invalid escape sequence");
+                        while (try self.s.peek()) |w| {
                             if (w == ' ' or w == '\t' or w == '\n') {
-                                self.pos += 1;
-                            } else if (self.startsWith("\r\n")) {
-                                self.pos += 2;
+                                try self.s.bump();
+                            } else if (w == '\r' and (try self.s.peekAt(1)) == '\n') {
+                                try self.s.bump();
+                                try self.s.bump();
                             } else break;
                         }
-                    } else try self.escape(&out);
+                    } else try self.escape(esc);
                 },
                 '\n' => {
-                    try out.append(self.arena, c);
-                    self.pos += 1;
+                    try self.scratch.append(self.gpa, c);
+                    try self.s.bump();
                 },
                 '\r' => {
-                    if (!self.startsWith("\r\n")) return self.err("bare carriage return in string");
-                    try out.appendSlice(self.arena, "\r\n");
-                    self.pos += 2;
+                    if ((try self.s.peekAt(1)) != '\n') return self.err("bare carriage return in string");
+                    try self.scratch.appendSlice(self.gpa, "\r\n");
+                    try self.s.bump();
+                    try self.s.bump();
                 },
                 else => {
                     if (isForbiddenControl(c)) return self.err("control character in string");
-                    try out.append(self.arena, c);
-                    self.pos += 1;
+                    try self.scratch.append(self.gpa, c);
+                    try self.s.bump();
                 },
             }
         }
     }
 
-    fn multilineLiteral(self: *Parser) Error![]const u8 {
-        self.pos += 3;
-        _ = self.eatNewline();
-        var out: std.ArrayList(u8) = .empty;
+    fn multilineLiteral(self: *Parser) ReadError![]const u8 {
+        for (0..3) |_| try self.s.bump();
+        _ = try self.eatNewline();
+        self.scratch.clearRetainingCapacity();
         while (true) {
-            const c = self.peek() orelse return self.err("unterminated multi-line string");
+            const c = (try self.s.peek()) orelse return self.err("unterminated multi-line string");
             switch (c) {
-                '\'' => {
-                    const run = self.quoteRun('\'');
-                    if (run >= 3) {
-                        if (run > 5) return self.err("too many quotes in multi-line string");
-                        try out.appendNTimes(self.arena, '\'', run - 3);
-                        self.pos += run;
-                        return out.items;
-                    }
-                    try out.appendNTimes(self.arena, '\'', run);
-                    self.pos += run;
-                },
+                '\'' => if (try self.quoteRun('\'')) |s| return s,
                 '\r' => {
-                    if (!self.startsWith("\r\n")) return self.err("bare carriage return in string");
-                    try out.appendSlice(self.arena, "\r\n");
-                    self.pos += 2;
+                    if ((try self.s.peekAt(1)) != '\n') return self.err("bare carriage return in string");
+                    try self.scratch.appendSlice(self.gpa, "\r\n");
+                    try self.s.bump();
+                    try self.s.bump();
                 },
                 else => {
                     if (c != '\n' and isForbiddenControl(c)) return self.err("control character in string");
-                    try out.append(self.arena, c);
-                    self.pos += 1;
+                    try self.scratch.append(self.gpa, c);
+                    try self.s.bump();
                 },
             }
         }
     }
 
-    fn quoteRun(self: *const Parser, q: u8) usize {
-        var n: usize = 0;
-        while (self.pos + n < self.src.len and self.src[self.pos + n] == q) n += 1;
-        return n;
+    /// At a run of `q` inside a multi-line string. Three or more quotes end the
+    /// string (up to two of them may belong to its content); fewer are content.
+    /// Returns the finished string, or null if the string continues.
+    fn quoteRun(self: *Parser, q: u8) ReadError!?[]const u8 {
+        const at = self.s.loc();
+        var run: usize = 0;
+        while ((try self.s.peek()) == q) : (run += 1) try self.s.bump();
+        if (run < 3) {
+            try self.scratch.appendNTimes(self.gpa, q, run);
+            return null;
+        }
+        if (run > 5) return self.errAt(at, "too many quotes in multi-line string");
+        try self.scratch.appendNTimes(self.gpa, q, run - 3);
+        return try self.takeScratch();
     }
 
-    /// At a backslash inside a basic string.
-    fn escape(self: *Parser, out: *std.ArrayList(u8)) Error!void {
-        const esc_pos = self.pos;
-        self.pos += 1;
-        const c = self.peek() orelse return self.err("unterminated escape");
-        self.pos += 1;
+    /// Just past a backslash inside a basic string; `esc` is the backslash's
+    /// position. Appends the decoded character to the scratch buffer.
+    fn escape(self: *Parser, esc: Loc) ReadError!void {
+        const c = (try self.s.peek()) orelse return self.err("unterminated escape");
+        try self.s.bump();
         switch (c) {
-            'b' => try out.append(self.arena, 0x08),
-            't' => try out.append(self.arena, '\t'),
-            'n' => try out.append(self.arena, '\n'),
-            'f' => try out.append(self.arena, 0x0C),
-            'r' => try out.append(self.arena, '\r'),
-            '"' => try out.append(self.arena, '"'),
-            '\\' => try out.append(self.arena, '\\'),
+            'b' => try self.scratch.append(self.gpa, 0x08),
+            't' => try self.scratch.append(self.gpa, '\t'),
+            'n' => try self.scratch.append(self.gpa, '\n'),
+            'f' => try self.scratch.append(self.gpa, 0x0C),
+            'r' => try self.scratch.append(self.gpa, '\r'),
+            '"' => try self.scratch.append(self.gpa, '"'),
+            '\\' => try self.scratch.append(self.gpa, '\\'),
             'u', 'U' => {
                 const ndig: usize = if (c == 'u') 4 else 8;
-                if (self.pos + ndig > self.src.len) return self.errAt(esc_pos, "truncated unicode escape");
-                const cp32 = std.fmt.parseInt(u32, self.src[self.pos .. self.pos + ndig], 16) catch
-                    return self.errAt(esc_pos, "invalid unicode escape");
-                // parseInt accepts a leading sign; TOML does not.
-                for (self.src[self.pos .. self.pos + ndig]) |h| {
-                    if (!std.ascii.isHex(h)) return self.errAt(esc_pos, "invalid unicode escape");
+                var cp32: u32 = 0;
+                for (0..ndig) |_| {
+                    const h = (try self.s.peek()) orelse return self.errAt(esc, "truncated unicode escape");
+                    if (!std.ascii.isHex(h)) return self.errAt(esc, "invalid unicode escape");
+                    cp32 = cp32 * 16 + (std.fmt.charToDigit(h, 16) catch unreachable);
+                    try self.s.bump();
                 }
                 if (cp32 > 0x10FFFF or (cp32 >= 0xD800 and cp32 <= 0xDFFF))
-                    return self.errAt(esc_pos, "unicode escape is not a scalar value");
+                    return self.errAt(esc, "unicode escape is not a scalar value");
                 var buf: [4]u8 = undefined;
                 const n = std.unicode.utf8Encode(@intCast(cp32), &buf) catch unreachable;
-                try out.appendSlice(self.arena, buf[0..n]);
-                self.pos += ndig;
+                try self.scratch.appendSlice(self.gpa, buf[0..n]);
             },
-            else => return self.errAt(esc_pos, "invalid escape sequence"),
+            else => return self.errAt(esc, "invalid escape sequence"),
         }
     }
 
     // ---- numbers, booleans, datetimes -----------------------------------
 
-    fn scalar(self: *Parser) Error!Value {
-        const start = self.pos;
-        // A space-separated datetime ("1979-05-27 07:32:00") is one token.
-        var end = start;
-        while (end < self.src.len and !isTokenEnd(self.src[end])) end += 1;
-        if (looksLikeDate(self.src[start..end]) and end + 1 < self.src.len and self.src[end] == ' ' and
-            end + 3 < self.src.len and std.ascii.isDigit(self.src[end + 1]) and std.ascii.isDigit(self.src[end + 2]) and self.src[end + 3] == ':')
-        {
-            end += 1;
-            while (end < self.src.len and !isTokenEnd(self.src[end])) end += 1;
+    /// Appends bare-token bytes (up to a delimiter) to the scratch buffer.
+    fn token(self: *Parser) ReadError!void {
+        while (try self.s.peek()) |c| {
+            if (isTokenEnd(c)) break;
+            try self.scratch.append(self.gpa, c);
+            try self.s.bump();
         }
-        const tok = self.src[start..end];
+    }
+
+    fn scalar(self: *Parser) ReadError!Value {
+        const start = self.s.loc();
+        self.scratch.clearRetainingCapacity();
+        try self.token();
+        // A space-separated datetime ("1979-05-27 07:32:00") is one token.
+        if (looksLikeDate(self.scratch.items) and (try self.s.peek()) == ' ') {
+            const d1 = try self.s.peekAt(1);
+            const d2 = try self.s.peekAt(2);
+            const colon = try self.s.peekAt(3);
+            if (d1 != null and d2 != null and std.ascii.isDigit(d1.?) and std.ascii.isDigit(d2.?) and colon == ':') {
+                try self.scratch.append(self.gpa, ' ');
+                try self.s.bump();
+                try self.token();
+            }
+        }
+        const tok = self.scratch.items;
         if (tok.len == 0) return self.err("expected value");
-        self.pos = end;
 
         if (std.mem.eql(u8, tok, "true")) return .{ .boolean = true };
         if (std.mem.eql(u8, tok, "false")) return .{ .boolean = false };
@@ -590,7 +710,7 @@ const Parser = struct {
         return self.number(tok, start);
     }
 
-    fn number(self: *Parser, tok: []const u8, start: usize) Error!Value {
+    fn number(self: *Parser, tok: []const u8, start: Loc) Error!Value {
         var s = tok;
         var neg = false;
         var signed = false;
@@ -657,7 +777,7 @@ const Parser = struct {
     /// Validates underscore placement (only between digits) and returns the
     /// digits without them. `base == 0` means "a float body": '.', 'e', 'E',
     /// '+' and '-' count as non-digit separators that underscores may not touch.
-    fn stripUnderscores(self: *Parser, s: []const u8, base: u8, start: usize) ?[]const u8 {
+    fn stripUnderscores(self: *Parser, s: []const u8, base: u8, start: Loc) ?[]const u8 {
         _ = start;
         if (s.len == 0) return null;
         const out = self.arena.alloc(u8, s.len) catch return null;

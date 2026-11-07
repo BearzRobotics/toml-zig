@@ -1,6 +1,6 @@
 # 0001: Parse from a std.Io.Reader instead of a byte slice
 
-Status: proposed (branch `streaming-io`). Not yet approved or implemented.
+Status: implemented on branch `streaming-io`; design approved by the maintainer. Merge pending.
 
 ## Problem
 
@@ -56,6 +56,31 @@ with no leaks; `max_bytes` on a 1-byte reader; writer output identical through
 an 8-byte-buffer writer; `WriteFailed` at every possible output length. The
 full existing suite must additionally pass with all input fed one byte at a
 time.
+
+## Result (same machine, same bench)
+
+| Input | parse before | parse after | parseReader after | write |
+|---|---|---|---|---|
+| 4 KB | 0.086 ms | 0.063 ms | 0.063 ms | 0.013 ms |
+| 256 KB | 6.5 ms | 5.0 ms | 5.0 ms | 1.0 ms |
+| 8 MB | 211 ms | 156 ms | 157 ms | 32 ms |
+
+Parsing is about 25% faster, not slower. Likely causes (not profiled): strings
+were previously assembled in arena-backed lists that left their growth garbage
+in the arena, and the input was scanned twice (UTF-8 validation, then parse).
+The reused scratch buffer and single pass avoid both. `parseReader` no longer
+copies the input first, so it now equals `parse`.
+
+Implementation notes: lookahead is at most 4 bytes (`max_lookahead`); a
+`Reader` with a smaller buffer is wrapped with `Reader.Limited` and an 8-byte
+stack buffer. Invalid UTF-8 is now reported at the offending byte when it is
+consumed, so a syntax error earlier in the file is reported before a UTF-8
+error later in it (previously UTF-8 was checked first). The whole conformance
+suite is also run through a one-byte reader and must give the same value or
+the same error and line/column.
+
+Not measured: a worst-case unbuffered one-byte reader (correctness is tested,
+speed is not).
 
 ## Alternatives considered
 
