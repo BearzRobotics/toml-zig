@@ -23,6 +23,7 @@ pub const Time = @import("value.zig").Time;
 pub const ParseError = @import("parser.zig").Error;
 pub const Options = @import("parser.zig").Options;
 pub const Diagnostic = @import("parser.zig").Diagnostic;
+pub const ParseReaderError = ParseError || error{ReadFailed};
 pub const WriteError = @import("writer.zig").Error;
 
 /// A parsed document. Owns an arena holding every string, table and array
@@ -47,6 +48,19 @@ pub const Document = struct {
         errdefer doc.deinit();
         try @import("parser.zig").parse(doc.arena.allocator(), doc.root, source, options, diag);
         return doc;
+    }
+
+    /// Reads `r` to its end, then parses it like `parse`. Fails with
+    /// `error.LimitExceeded` once the input passes `options.max_bytes`, without
+    /// buffering more than that.
+    pub fn parseReader(gpa: Allocator, r: *std.Io.Reader, options: Options, diag: ?*Diagnostic) ParseReaderError!Document {
+        const source = r.allocRemaining(gpa, .limited(options.max_bytes)) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ReadFailed => return error.ReadFailed,
+            error.StreamTooLong => return error.LimitExceeded,
+        };
+        defer gpa.free(source);
+        return parse(gpa, source, options, diag);
     }
 
     pub fn deinit(self: *Document) void {

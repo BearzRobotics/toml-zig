@@ -137,6 +137,7 @@ Do not select a dependency merely because it exists, or reject one merely becaus
 13. Standalone Zig Libraries (When Applicable)
 These rules apply to projects intended to be reusable Zig libraries, not every internal module of an application.
 - Expose an idiomatic native Zig module as the primary interface, consumable through Zig's package/build system without requiring a separately built static or shared library artifact.
+- Must use the io interface. (const Io = std.Io;) for potablity unless there is a complelling reason not to. -- That I approve.
 - Keep the native API independent of any optional C ABI adapter.
 - An optional C FFI MAY expose static and shared library artifacts when interoperability is useful and the project specification calls for it.
 - FFI boundaries MUST define ownership, allocation, deallocation, error reporting, and object lifetimes; use C-compatible types at the boundary.

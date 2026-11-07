@@ -618,3 +618,14 @@ test "allocation failure is handled" {
         } else |e| try testing.expectEqual(error.OutOfMemory, e);
     }
 }
+
+test "parseReader reads from a std.Io.Reader and enforces max_bytes" {
+    const gpa = std.testing.allocator;
+    var r: std.Io.Reader = .fixed("a = 1\n[t]\nb = \"x\"\n");
+    var doc = try toml.Document.parseReader(gpa, &r, .{}, null);
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(i64, 1), doc.root.lookup("a").?.integer);
+
+    var big: std.Io.Reader = .fixed("a = 1\n");
+    try std.testing.expectError(error.LimitExceeded, toml.Document.parseReader(gpa, &big, .{ .max_bytes = 3 }, null));
+}

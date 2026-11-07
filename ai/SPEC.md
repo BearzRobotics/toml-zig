@@ -6,6 +6,8 @@
 
 A small, dependency-free TOML 1.0.0 parser and writer for Zig 0.17, written for DKDE's configuration files but usable by any project. Reference: https://toml.io/en/v1.0.0 (normative text and ABNF in toml-lang/toml at tag v1.0.0).
 
+Add toml 1.1.0 support
+
 ## Requirements
 
 - **TOML-1 (MUST):** Accept every valid TOML 1.0.0 document: all string forms, integers (decimal/hex/octal/binary, underscores), floats (incl. `inf`/`nan`), booleans, all four datetime forms, arrays (mixed types), tables, inline tables, arrays of tables, dotted keys.
