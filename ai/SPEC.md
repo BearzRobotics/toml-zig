@@ -40,7 +40,7 @@ Ownership: strings and tables returned by getters borrow from the document and a
 - Comments are kept in a side table (TOML-10). Comments **inside arrays and inline tables** are dropped, and other formatting (spacing, quoting style, multi-line arrays, key order between scalars and sub-tables) is normalized by the writer. Runs of blank lines collapse to one.
 - Datetime fractional seconds beyond nanoseconds are truncated.
 - `Table.lookup` splits on `.`; keys containing a dot need `get`.
-- TOML 1.1 additions (`\e`, `\xHH`, optional seconds, newlines in inline tables) are rejected on purpose.
+
 - Duplicate-key and table-kind rules follow the 1.0.0 text; the official `toml-test` suite is not vendored and has **not** been run. Treat "conformant" as unverified until it is.
 - Parsing is single-threaded; documents are not safe for concurrent mutation.
 

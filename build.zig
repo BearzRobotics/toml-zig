@@ -17,14 +17,14 @@ pub fn build(b: *std.Build) void {
     const unit = b.addTest(.{ .root_module = mod });
     test_step.dependOn(&b.addRunArtifact(unit).step);
 
-    // Checks that the code in docs/writing-toml.md parses.
+    // Checks that the code in docs/manpages/toml-syntax.5.md parses.
     const guide_mod = b.createModule(.{
         .root_source_file = b.path("src/guide_tests.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{.{ .name = "toml", .module = mod }},
     });
-    guide_mod.addAnonymousImport("writing-toml.md", .{ .root_source_file = b.path("docs/writing-toml.md") });
+    guide_mod.addAnonymousImport("toml-syntax.5.md", .{ .root_source_file = b.path("docs/manpages/toml-syntax.5.md") });
     const guide_test = b.addTest(.{ .root_module = guide_mod });
     test_step.dependOn(&b.addRunArtifact(guide_test).step);
 

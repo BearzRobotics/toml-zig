@@ -1,4 +1,4 @@
-//! Keeps docs/writing-toml.md honest: every ```toml block in it must parse.
+//! Keeps docs/manpages/toml-syntax.5.md honest: every ```toml block in it must parse.
 //! Built as its own test module (see build.zig) because the guide lives
 //! outside src/ and is handed in as an anonymous import.
 
@@ -6,7 +6,7 @@ const std = @import("std");
 const toml = @import("toml");
 const testing = std.testing;
 
-const guide = @embedFile("writing-toml.md");
+const guide = @embedFile("toml-syntax.5.md");
 
 fn parses(version: toml.Version, src: []const u8) bool {
     var diag: toml.Diagnostic = .{};

@@ -1,4 +1,12 @@
-# Writing TOML
+% TOML-SYNTAX(5) Version 0.2.0 | toml-zig Manual
+% toml-zig contributors
+% 2026-11-10
+
+# NAME
+
+toml-syntax - the TOML 1.0 / 1.1 syntax accepted and written by toml-zig
+
+# DESCRIPTION
 
 A quick guide to the syntax this library reads and writes. The authoritative
 text is the official specification; read it when anything here is unclear:
@@ -151,4 +159,51 @@ the same thing. The writer's output is valid under both versions.
 - A bare value that is not a number, boolean or date: `name = ada` must be `name = "ada"`.
 - Adding keys to an inline table after the fact (`point.z = 3`) or reopening it with `[point]`.
 - Mixing `[[x]]` and `[x]` for the same name.
-- Expecting comments to survive a save: this library's writer does not keep them.
+- Expecting every comment to survive a save. Comments above a key or header, a trailing comment on its line, and comments after the last item are kept; comments *inside* an array or an inline table are dropped. See **toml-zig**(3), LIMITATIONS.
+- Putting a table-array element's keys after a sub-table header; the writer emits scalars before sub-tables, so a re-saved file may order keys differently from the original.
+
+# EXAMPLES
+
+A complete configuration file using most of the syntax above:
+
+```toml
+# Panel configuration
+title = "DKDE"
+
+[panel]
+position = "bottom"      # top|bottom
+height = 32
+opacity = 0.9
+margins = [4, 4, 0, 0]
+started = 2026-11-10T09:30:00-05:00
+
+[panel.clock]
+format = "%H:%M"
+tooltip = { show = true, delay_ms = 250 }
+
+[[panel.widget]]
+name = "launcher"
+
+[[panel.widget]]
+name = "tray"
+icon_size = 16
+```
+
+# DIAGNOSTICS
+
+A failed parse reports a 1-based `line:column` and a short message, for
+example `2:1: duplicate key`. Only the first error is reported. The error set
+is `Syntax`, `InvalidUtf8`, `LimitExceeded` and `OutOfMemory`; see
+**toml-zig**(3).
+
+# COMPATIBILITY
+
+Accepts TOML 1.1.0 by default and TOML 1.0.0 with `Options.version = .v1_0`.
+Input must be UTF-8; a leading byte-order mark is skipped. Integers are 64-bit
+signed; a literal outside that range is an error. Datetime fractions beyond
+nanoseconds are truncated. The official `toml-test` suite has not been run
+against this library (see `ai/SPEC.md`).
+
+# SEE ALSO
+
+**toml-zig**(3), **toml-parse**(1), <https://toml.io/en/v1.1.0>
