@@ -1,7 +1,3 @@
-% TOML-PARSE(1) Version 0.2.0 | toml-zig Manual
-% toml-zig contributors
-% 2026-11-10
-
 # NAME
 
 toml-parse - generate and parse TOML files, for comparing builds of toml-zig
@@ -17,9 +13,13 @@ toml-parse - generate and parse TOML files, for comparing builds of toml-zig
 # DESCRIPTION
 
 A small benchmarking aid, not a general TOML tool. It exists so that two
+
 builds of the library can be compared as whole processes with
+
 [poop](https://github.com/andrewrk/poop), which reports wall time, cycles,
+
 instructions, cache and branch misses and peak memory. Build it with
+
 `zig build cli`; the binary is `zig-out/bin/toml-parse` (always ReleaseFast).
 
 # COMMANDS
@@ -47,6 +47,7 @@ The input size limit is raised to 1 GiB for both parse commands.
   written to standard error.
 
 Other failures (bad usage, unreadable file) end the program with a Zig error
+
 trace and a nonzero status.
 
 # EXAMPLES
@@ -60,3 +61,4 @@ poop 'old/toml-parse slice big.toml' 'new/toml-parse slice big.toml'
 # SEE ALSO
 
 **toml-zig**(3), **toml-syntax**(5)
+

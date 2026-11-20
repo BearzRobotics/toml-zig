@@ -1,7 +1,3 @@
-% TOML-SYNTAX(5) Version 0.2.0 | toml-zig Manual
-% toml-zig contributors
-% 2026-11-10
-
 # NAME
 
 toml-syntax - the TOML 1.0 / 1.1 syntax accepted and written by toml-zig
@@ -9,6 +5,7 @@ toml-syntax - the TOML 1.0 / 1.1 syntax accepted and written by toml-zig
 # DESCRIPTION
 
 A quick guide to the syntax this library reads and writes. The authoritative
+
 text is the official specification; read it when anything here is unclear:
 
 - **Specification, 1.1.0:** <https://toml.io/en/v1.1.0>
@@ -17,13 +14,17 @@ text is the official specification; read it when anything here is unclear:
 - **Changelog (1.0 → 1.1):** <https://github.com/toml-lang/toml/blob/main/CHANGELOG.md>
 
 This page is our own summary, not a copy of the specification. Every example
+
 below is parsed by `zig build test` (see `src/guide_tests.zig`), so the code
+
 blocks are known to be valid.
 
 ## The shape of a file
 
 A TOML file is a set of `key = value` pairs, grouped under `[table]` headers.
+
 Keys are case-sensitive. A `#` starts a comment. Whitespace around `=` and
+
 between tokens is free; each pair sits on its own line.
 
 ```toml
@@ -66,6 +67,7 @@ no escapes at all.'''
 ```
 
 Escapes in basic strings: `\b \t \n \f \r \" \\`, `\uHHHH`, `\UHHHHHHHH`, and,
+
 **new in 1.1**, `\xHH` (code points up to 255) and `\e` (escape, U+001B).
 
 ## Numbers, booleans
@@ -82,6 +84,7 @@ no = false
 ```
 
 Leading zeros (`007`) are not allowed on decimal numbers, and underscores
+
 must sit between digits. Integers are 64-bit signed.
 
 ## Dates and times
@@ -95,6 +98,7 @@ local_time = 07:32:00
 ```
 
 **New in 1.1:** the seconds may be left out, and are then zero:
+
 `07:32`, `1979-05-27 07:32Z`. A fraction needs seconds (`07:32.5` is invalid).
 
 ## Arrays
@@ -128,6 +132,7 @@ name = "grace"
 ```
 
 **New in 1.1:** inline tables may span lines, contain comments, and end with
+
 a comma:
 
 ```toml
@@ -138,6 +143,7 @@ colors = {
 ```
 
 Under 1.0 that form is an error: inline tables must be on one line with no
+
 trailing comma. (Use a normal `[table]` for anything large.)
 
 ## Choosing a version in this library
@@ -151,6 +157,7 @@ var doc10 = try toml.Document.parse(gpa, text, .{ .version = .v1_0 }, &diag);
 ```
 
 TOML 1.1 only *adds* syntax: every valid 1.0 document is valid 1.1 and means
+
 the same thing. The writer's output is valid under both versions.
 
 ## Common mistakes
@@ -192,18 +199,26 @@ icon_size = 16
 # DIAGNOSTICS
 
 A failed parse reports a 1-based `line:column` and a short message, for
+
 example `2:1: duplicate key`. Only the first error is reported. The error set
+
 is `Syntax`, `InvalidUtf8`, `LimitExceeded` and `OutOfMemory`; see
+
 **toml-zig**(3).
 
 # COMPATIBILITY
 
 Accepts TOML 1.1.0 by default and TOML 1.0.0 with `Options.version = .v1_0`.
+
 Input must be UTF-8; a leading byte-order mark is skipped. Integers are 64-bit
+
 signed; a literal outside that range is an error. Datetime fractions beyond
+
 nanoseconds are truncated. The official `toml-test` suite has not been run
+
 against this library (see `ai/SPEC.md`).
 
 # SEE ALSO
 
 **toml-zig**(3), **toml-parse**(1), <https://toml.io/en/v1.1.0>
+

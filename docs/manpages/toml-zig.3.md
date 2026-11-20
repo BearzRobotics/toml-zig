@@ -1,7 +1,3 @@
-% TOML-ZIG(3) Version 0.2.0 | toml-zig Manual
-% toml-zig contributors
-% 2026-11-10
-
 # NAME
 
 toml-zig - TOML 1.1.0 / 1.0.0 parser, editor and writer for Zig
@@ -31,24 +27,35 @@ exe.root_module.addImport("toml", b.dependency("toml", .{}).module("toml"));
 # DESCRIPTION
 
 toml-zig reads TOML into an in-memory tree, lets a program inspect and change
+
 the tree, and writes it back as TOML. It targets Zig 0.17 and depends only on
+
 the standard library. It performs no file-system or operating-system calls
+
 itself: input comes from a byte slice or any `std.Io.Reader`, output goes to
+
 any `std.Io.Writer`, so the caller decides where bytes live.
 
 A **Document** owns a single arena allocator. Every string, table and array
+
 reachable from `Document.root` is allocated there, and `Document.deinit` frees
+
 all of it at once. Nothing inside a document is freed individually.
 
 A tutorial with worked examples is in `docs/api.md`. The syntax itself is
+
 described in **toml-syntax**(5).
 
 # CONVENTIONS
 
 `gpa` is a `std.mem.Allocator` used for scratch memory and for the arena's
+
 backing storage. A value described as *borrowed* lives in the document's arena
+
 and is invalid after `deinit`. Function names are given as `Type.function`.
+
 "Path" means either a dotted string (`"a.b.c"`, for `lookup`) or a slice of
+
 key segments (`&.{ "a", "b", "c" }`, for `set` and `setComments`).
 
 # TYPES
@@ -169,12 +176,15 @@ key segments (`&.{ "a", "b", "c" }`, for `set` and `setComments`).
 : Read or replace the comments on a key's line.
 
 Iterate entries with `table.entries.iterator()`; the order is the order in the
+
 file (or the order of insertion).
 
 # ERRORS
 
 `ParseError` is `Syntax`, `InvalidUtf8`, `LimitExceeded` or `OutOfMemory`.
+
 `ParseReaderError` adds `ReadFailed`. `WriteError` is `std.Io.Writer.Error`
+
 plus `OutOfMemory`.
 
 `Syntax`
@@ -189,6 +199,7 @@ plus `OutOfMemory`.
 : `max_bytes` or `max_depth` exceeded.
 
 Only the first error is reported. If a `Diagnostic` was given it receives the
+
 position and a short message. On any error no memory is leaked.
 
 # OWNERSHIP AND LIFETIME
@@ -206,13 +217,19 @@ position and a short message. On any error no memory is leaked.
 # OUTPUT
 
 The writer is deterministic. Keys appear in insertion order, except that
+
 scalar keys are written before sub-tables. Strings are written with the
+
 quoting needed to be valid. Output is valid under both TOML 1.0 and 1.1 and
+
 parses back to an equal tree.
 
 Comments are preserved through parse, edit and write: lines above a key or
+
 header (including blank lines that separate groups of settings), a trailing
+
 comment on a line, and comments after the last item. They move with their
+
 item and are dropped with a removed key.
 
 # EXAMPLES
@@ -267,27 +284,36 @@ More in `docs/api.md`; every example there is compiled by `zig build test`.
 # RESOURCE USAGE
 
 Memory is the parsed tree plus one reused scratch buffer; the input is not held
+
 in memory when `parseReader` is used. Defaults bound input to 16 MiB and
+
 nesting to 64 levels so that untrusted input cannot exhaust the stack. Measured
+
 throughput is in `docs/decisions/0001-streaming-parser.md` (roughly 40 MB/s
+
 parse, 220 MB/s write on the recorded machine; `zig build bench` reproduces
+
 them).
 
 # COMPATIBILITY
 
 Requires Zig 0.17. Specifications: TOML 1.1.0 (default) and 1.0.0, selected by
+
 `Options.version`. Every valid 1.0 document is valid 1.1 and parses identically.
 
 # SEE ALSO
 
 **toml-syntax**(5), **toml-parse**(1), `docs/api.md`, `docs/decisions/`,
+
 <https://toml.io/en/v1.1.0>
 
 # AVAILABILITY
 
 Source: the repository containing this file. Report defects with a minimal
+
 TOML input and the printed `line:column: message`.
 
 # VERSION
 
 This manual describes toml-zig 0.2.0.
+
