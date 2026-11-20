@@ -3,6 +3,21 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
+    // Manual pages (Markdown, read by dkman and dkde-help): share/man/manN/NAME.N.md.
+    // The section N is the number in the file name.
+    if (b.option(bool, "man", "Install the manual pages (default: on)") orelse true) {
+        const pages = [_][]const u8{ "toml-parse.1.md", "toml-syntax.5.md", "toml-zig.3.md" };
+        for (pages) |page| {
+            const stem = page[0 .. page.len - ".md".len];
+            const section = stem[std.mem.lastIndexOfScalar(u8, stem, '.').? + 1 ..];
+            b.getInstallStep().dependOn(&b.addInstallFileWithDir(
+                b.path(b.fmt("docs/manpages/{s}", .{page})),
+                .{ .custom = b.fmt("share/man/man{s}", .{section}) },
+                page,
+            ).step);
+        }
+    }
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
