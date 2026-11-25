@@ -175,7 +175,8 @@ key segments (`&.{ "a", "b", "c" }`, for `set` and `setComments`).
   whether the key existed.
 
 `commentsOf(key) ?Comments`, `setComments(arena, key, comments) !void`
-: Read or replace the comments on a key's line.
+: Read or replace the comments on a key's line. The comment strings must be
+  arena-owned; the key is not retained, and may be one that is added later.
 
 Iterate entries with `table.entries.iterator()`; the order is the order in the
 

@@ -249,14 +249,17 @@ pub const Table = struct {
     }
 
     /// Replaces the comments on `key`'s line. `c` must be arena-owned and valid
-    /// (see `checkComments`).
+    /// (see `checkComments`); `key` is not retained. `key` need not exist yet:
+    /// the comments are kept and written once it does.
     pub fn setComments(self: *Table, arena: Allocator, key: []const u8, c: Comments) (Allocator.Error || error{InvalidComment})!void {
         try checkComments(c);
         if (c.isEmpty()) {
             _ = self.key_comments.orderedRemove(key);
             return;
         }
-        const k = if (self.entries.getKey(key)) |own| own else key;
+        const k = self.entries.getKey(key) orelse
+            self.key_comments.getKey(key) orelse
+            try arena.dupe(u8, key);
         try self.key_comments.put(arena, k, c);
     }
 };

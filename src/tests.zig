@@ -1522,6 +1522,19 @@ test "comments stay with a key whose value changes between scalar and table" {
     try expectOutput(&dotted, "# about k\n[k]\na = 1\n");
 }
 
+test "Table.setComments does not keep the caller's key" {
+    var doc = try parseOk("a = 1\n");
+    defer doc.deinit();
+    var key = "later".*;
+    // Comments may be set before the value; they apply once it exists.
+    try doc.root.setComments(doc.allocator(), &key, .{ .after = "# first" });
+    try doc.root.setComments(doc.allocator(), &key, .{ .after = "# second" });
+    @memset(&key, 'x'); // the caller reuses its buffer
+    try testing.expectEqualStrings("# second", doc.root.commentsOf("later").?.after.?);
+    try doc.set(&.{"later"}, .{ .integer = 2 });
+    try expectOutput(&doc, "a = 1\nlater = 2 # second\n");
+}
+
 test "a comment-only document and CRLF line endings keep their comments" {
     try roundTrips("# just a comment\n");
     var doc = try parseOk("# c\r\nk = 1 # t\r\n");
