@@ -1,7 +1,7 @@
 //! Serializes a table tree back to TOML text.
 //!
-//! Output is deterministic: keys appear in insertion order, scalar keys before
-//! sub-tables. Comments (and the blank lines kept with them) are written back
+//! Output is deterministic: keys appear in insertion order, scalar and dotted
+//! keys before sub-tables. Dotted keys are written as dotted keys. Comments (and the blank lines kept with them) are written back
 //! next to the item they were attached to; other formatting is not preserved,
 //! and comments inside arrays and inline tables are dropped. Unknown keys are
 //! preserved because the whole tree is.
@@ -46,7 +46,7 @@ pub fn writeTable(gpa: Allocator, w: *Writer, root: *const Table) Error!void {
     var path: std.ArrayList([]const u8) = .empty;
     defer path.deinit(gpa);
     var first = true;
-    try emit(gpa, w, root, &path, false, &first);
+    try emit(gpa, w, root, &path, &first);
     if (root.footer.len != 0) {
         if (!first and root.footer[0].len != 0) try w.writeByte('\n');
         try lines(w, root.footer);
@@ -78,35 +78,76 @@ fn isSection(v: Value) bool {
     };
 }
 
-fn emit(gpa: Allocator, w: *Writer, t: *const Table, path: *std.ArrayList([]const u8), is_array_elem: bool, first: *bool) Error!void {
-    _ = is_array_elem;
-    const keys = t.entries.keys();
-    const vals = t.entries.values();
-    for (keys, vals) |k, v| {
+/// The table, if `v` is to be written as dotted keys (`a.b = 1`) in the
+/// section that holds it, rather than under a header of its own. That is how a
+/// table made by dotted keys was written. It still needs a header to hold
+/// header comments, or to exist at all once it has no entries.
+fn asDotted(v: Value) ?*const Table {
+    return switch (v) {
+        .table => |t| if (t.kind == .dotted and t.count() != 0 and t.header.isEmpty()) t else null,
+        else => null,
+    };
+}
+
+/// The dotted-key segments leading to the entry being written, innermost first.
+/// The nodes live on the stack of the functions that recurse into each table.
+const Prefix = struct {
+    outer: ?*const Prefix,
+    key: []const u8,
+
+    fn write(self: *const Prefix, w: *Writer) Writer.Error!void {
+        if (self.outer) |o| try o.write(w);
+        try writeKey(w, self.key);
+        try w.writeByte('.');
+    }
+};
+
+/// Writes one table: its `key = value` lines first, then its sections, since
+/// every line after a header belongs to that header.
+fn emit(gpa: Allocator, w: *Writer, t: *const Table, path: *std.ArrayList([]const u8), first: *bool) Error!void {
+    try keyLines(w, t, null, first);
+    try sections(gpa, w, t, path, first);
+}
+
+fn keyLines(w: *Writer, t: *const Table, prefix: ?*const Prefix, first: *bool) Writer.Error!void {
+    for (t.entries.keys(), t.entries.values()) |k, v| {
+        if (asDotted(v)) |sub| {
+            try keyLines(w, sub, &.{ .outer = prefix, .key = k }, first);
+            continue;
+        }
         if (isSection(v)) continue;
         const c = t.commentsOf(k) orelse Comments{};
         try lines(w, c.before);
+        if (prefix) |p| try p.write(w);
         try writeKey(w, k);
         try w.writeAll(" = ");
         try writeInline(w, v);
         try after(w, c);
         first.* = false;
     }
-    for (keys, vals) |k, v| {
+}
+
+fn sections(gpa: Allocator, w: *Writer, t: *const Table, path: *std.ArrayList([]const u8), first: *bool) Error!void {
+    for (t.entries.keys(), t.entries.values()) |k, v| {
         if (!isSection(v)) continue;
         try path.append(gpa, k);
         defer _ = path.pop();
+        // Its lines are already written; only sections below it remain.
+        if (asDotted(v)) |sub| {
+            try sections(gpa, w, sub, path, first);
+            continue;
+        }
         switch (v) {
             .table => |sub| {
                 // An implicit parent with only sub-tables needs no header of its own.
                 if (!onlySections(sub)) {
                     try header(w, path.items, false, first, sub.header);
                 }
-                try emit(gpa, w, sub, path, false, first);
+                try emit(gpa, w, sub, path, first);
             },
             .array => |a| for (a.items.items) |item| {
                 try header(w, path.items, true, first, item.table.header);
-                try emit(gpa, w, item.table, path, true, first);
+                try emit(gpa, w, item.table, path, first);
             },
             else => unreachable,
         }
@@ -114,9 +155,16 @@ fn emit(gpa: Allocator, w: *Writer, t: *const Table, path: *std.ArrayList([]cons
 }
 
 fn onlySections(t: *const Table) bool {
-    if (t.kind != .implicit) return false;
-    for (t.entries.values()) |v| if (!isSection(v)) return false;
-    return true;
+    return t.kind == .implicit and !hasKeyLines(t);
+}
+
+fn hasKeyLines(t: *const Table) bool {
+    for (t.entries.values()) |v| {
+        if (asDotted(v)) |sub| {
+            if (hasKeyLines(sub)) return true;
+        } else if (!isSection(v)) return true;
+    }
+    return false;
 }
 
 fn header(w: *Writer, path: []const []const u8, array: bool, first: *bool, c: Comments) Writer.Error!void {
@@ -177,14 +225,28 @@ fn writeInline(w: *Writer, v: Value) Writer.Error!void {
         .table => |t| {
             if (t.count() == 0) return w.writeAll("{}");
             try w.writeAll("{ ");
-            for (t.entries.keys(), t.entries.values(), 0..) |k, sub, i| {
-                if (i != 0) try w.writeAll(", ");
-                try writeKey(w, k);
-                try w.writeAll(" = ");
-                try writeInline(w, sub);
-            }
+            var separate = false;
+            try inlineEntries(w, t, null, &separate);
             try w.writeAll(" }");
         },
+    }
+}
+
+/// The `key = value` pairs between the braces of an inline table. Tables made
+/// by dotted keys stay dotted: nesting braces instead could exceed the depth
+/// the parser accepts.
+fn inlineEntries(w: *Writer, t: *const Table, prefix: ?*const Prefix, separate: *bool) Writer.Error!void {
+    for (t.entries.keys(), t.entries.values()) |k, v| {
+        if (v == .table and v.table.kind == .dotted and v.table.count() != 0) {
+            try inlineEntries(w, v.table, &.{ .outer = prefix, .key = k }, separate);
+            continue;
+        }
+        if (separate.*) try w.writeAll(", ");
+        separate.* = true;
+        if (prefix) |p| try p.write(w);
+        try writeKey(w, k);
+        try w.writeAll(" = ");
+        try writeInline(w, v);
     }
 }
 

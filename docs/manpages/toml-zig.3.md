@@ -220,7 +220,7 @@ position and a short message. On any error no memory is leaked.
 
 The writer is deterministic. Keys appear in insertion order, except that
 
-scalar keys are written before sub-tables. Strings are written with the
+scalar and dotted keys are written before sub-tables. Dotted keys stay dotted. Strings are written with the
 
 quoting needed to be valid. Output is valid under both TOML 1.0 and 1.1 and
 

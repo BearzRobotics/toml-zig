@@ -275,7 +275,8 @@ try doc.write(gpa, &w.interface);
 try w.interface.flush();
 ```
 
-Output order is key insertion order, with scalar keys before sub-tables.
+Output order is key insertion order, with scalar keys before sub-tables. Dotted
+keys stay dotted keys.
 Spacing, quote style and multi-line arrays are normalized. The result is valid
 TOML 1.0 and 1.1 and parses back to the same tree. To save safely, write to a
 temporary file and rename it over the original; the library does not touch the

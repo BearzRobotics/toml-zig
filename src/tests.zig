@@ -712,9 +712,7 @@ test "max_key_depth bounds tables made by headers and dotted keys" {
         errdefer std.debug.print("form: {s}...{s}\n", .{ form.before, form.after });
         const at_limit = try deepSource(128 - form.fixed, form.before, form.after);
         defer gpa.free(at_limit);
-        var doc = try parseWith(V10, at_limit);
-        defer doc.deinit();
-        gpa.free(try doc.toOwnedString(gpa));
+        try roundTrip(at_limit);
         for ([_]usize{ 129 - form.fixed, 100_000 }) |n| {
             const too_deep = try deepSource(n, form.before, form.after);
             defer gpa.free(too_deep);
@@ -865,6 +863,79 @@ test "writer: output is as expected for a simple document" {
         "b = 1\na = \"s\"\n\n[t]\nk = true\n\n[[arr]]\nx = 1\n\n[[arr]]\nx = 2\n",
         text,
     );
+}
+
+test "writer: dotted keys stay dotted keys" {
+    try roundTrips("a.b.c.d = 1\n");
+    try roundTrips(
+        \\# about the name
+        \\physical.color = "orange" # tail
+        \\physical.shape.kind = "round"
+        \\name = "x"
+        \\
+        \\[fruit]
+        \\apple.color = "red"
+        \\apple.taste.sweet = true
+        \\
+        \\[fruit.apple.texture]
+        \\smooth = true
+        \\
+        \\[[list]]
+        \\a.b = 1
+        \\
+        \\[list.a.c]
+        \\d = 2
+        \\
+    );
+    try roundTrips("x = { a.b = 1, a.c.d = 2, e = [{ f.g = 3 }] }\n");
+}
+
+test "writer: output does not grow faster than the input" {
+    const gpa = testing.allocator;
+    for ([_][2][]const u8{ .{ "", " = 1\n" }, .{ "x = { ", " = 1 }\n" } }) |form| {
+        const src = try deepSource(120, form[0], form[1]);
+        defer gpa.free(src);
+        var doc = try parseOk(src);
+        defer doc.deinit();
+        const out = try doc.toOwnedString(gpa);
+        defer gpa.free(out);
+        // Only the spaces around "=" and braces may differ.
+        try testing.expect(out.len <= src.len + 4);
+    }
+}
+
+test "writer: a dotted table that needs a header still gets one" {
+    // Header comments can only be written on a [header] line.
+    var doc = try parseOk("a.b.c = 1\nd = 2\n");
+    defer doc.deinit();
+    try doc.setComments(&.{ "a", "b" }, .{ .after = "# about b" });
+    const out = try doc.toOwnedString(testing.allocator);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("d = 2\n\n[a.b] # about b\nc = 1\n", out);
+    try roundTrip(out);
+
+    // An emptied dotted table is still part of the tree.
+    var emptied = try parseOk("a.b = 1\ne.f.g = 2\n");
+    defer emptied.deinit();
+    try testing.expect(emptied.root.getTable("a").?.remove("b"));
+    try testing.expect(emptied.root.getTable("e").?.getTable("f").?.remove("g"));
+    const text = try emptied.toOwnedString(testing.allocator);
+    defer testing.allocator.free(text);
+    var again = try parseOk(text);
+    defer again.deinit();
+    try expectSameTree(emptied.root, again.root);
+}
+
+test "writer: an implicit table gets a header once it holds a dotted key" {
+    var doc = try parseOk("[a.b]\n");
+    defer doc.deinit();
+    var dotted = try parseOk("c.d = 1\n");
+    defer dotted.deinit();
+    // Move the dotted table into the implicit table `a`.
+    try doc.set(&.{ "a", "c" }, dotted.root.get("c").?);
+    const out = try doc.toOwnedString(testing.allocator);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("[a]\nc.d = 1\n\n[a.b]\n", out);
 }
 
 test "writer: floats always look like floats" {
