@@ -72,10 +72,7 @@ pub fn writeTable(gpa: Allocator, w: *Writer, root: *const Table) Error!void {
     defer path.deinit(gpa);
     var first = true;
     try emit(gpa, w, root, &path, &first);
-    if (root.footer.len != 0) {
-        if (!first and root.footer[0].len != 0) try w.writeByte('\n');
-        try lines(w, root.footer);
-    }
+    try lines(w, if (first) fromTop(root.footer) else root.footer);
 }
 
 fn lines(w: *Writer, ls: []const []const u8) Writer.Error!void {
@@ -83,6 +80,15 @@ fn lines(w: *Writer, ls: []const []const u8) Writer.Error!void {
         try w.writeAll(l);
         try w.writeByte('\n');
     }
+}
+
+/// `ls` without leading blank lines, for what is written at the top of the
+/// output. The parser drops them there, so keeping them would make the next
+/// save differ.
+fn fromTop(ls: []const []const u8) []const []const u8 {
+    var i: usize = 0;
+    while (i < ls.len and ls[i].len == 0) i += 1;
+    return ls[i..];
 }
 
 fn after(w: *Writer, c: Comments) Writer.Error!void {
@@ -151,7 +157,7 @@ fn keyLines(w: *Writer, t: *const Table, prefix: ?*const Prefix, first: *bool) W
         }
         if (isSection(v)) continue;
         const c = t.commentsOf(k) orelse Comments{};
-        try lines(w, c.before);
+        try lines(w, if (first.*) fromTop(c.before) else c.before);
         if (prefix) |p| try p.write(w);
         try writeKey(w, k);
         try w.writeAll(" = ");
@@ -206,8 +212,8 @@ fn hasKeyLines(t: *const Table) bool {
 fn header(w: *Writer, path: []const []const u8, array: bool, first: *bool, c: Comments) Writer.Error!void {
     // A blank line sets a section apart, unless its comments already start with one.
     if (!first.* and (c.before.len == 0 or c.before[0].len != 0)) try w.writeByte('\n');
+    try lines(w, if (first.*) fromTop(c.before) else c.before);
     first.* = false;
-    try lines(w, c.before);
     try w.writeAll(if (array) "[[" else "[");
     for (path, 0..) |seg, i| {
         if (i != 0) try w.writeByte('.');

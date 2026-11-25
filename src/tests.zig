@@ -1363,6 +1363,30 @@ fn emptyTable(doc: *toml.Document) !*toml.Table {
     return t;
 }
 
+test "writer: no blank line at the top, and none added before the footer" {
+    try roundTrips("a = 1\n# end\n");
+    try roundTrips("a = 1\n\n# end\n");
+
+    // Reordering moves `[a]`, and the blank line above it, to the top.
+    var moved = try parseOk("[[a.b]]\n\n[a]\n");
+    defer moved.deinit();
+    try expectOutput(&moved, "[a]\n\n[[a.b]]\n");
+
+    // So does removing what came before: a header, a key, or the footer.
+    var header = try parseOk("a = 1\n\n# t\n[t]\n");
+    defer header.deinit();
+    _ = header.root.remove("a");
+    try expectOutput(&header, "# t\n[t]\n");
+    var key = try parseOk("a = 1\n\nb = 2\n");
+    defer key.deinit();
+    _ = key.root.remove("a");
+    try expectOutput(&key, "b = 2\n");
+    var footer = try parseOk("a = 1\n\n# end\n");
+    defer footer.deinit();
+    _ = footer.root.remove("a");
+    try expectOutput(&footer, "# end\n");
+}
+
 test "setComments on an implicit table makes the writer give it a header" {
     var doc = try parseOk("[a.b]\nx = 1\n");
     defer doc.deinit();

@@ -57,4 +57,8 @@ fn check(src: []const u8) !void {
     var b = try toml.Document.parse(gpa, out, .{ .version = .v1_0 }, null);
     defer b.deinit();
     try expectSameTree(a.root, b.root);
+    // Saving again must change nothing.
+    const again = try b.toOwnedString(gpa);
+    defer gpa.free(again);
+    try testing.expectEqualStrings(out, again);
 }
