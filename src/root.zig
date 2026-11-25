@@ -28,6 +28,14 @@ pub const Diagnostic = @import("parser.zig").Diagnostic;
 pub const ParseReaderError = ParseError || error{ReadFailed};
 pub const WriteError = @import("writer.zig").Error;
 
+/// The last element of a non-empty array of tables, if it really is a table.
+fn lastTable(a: *@import("value.zig").Array) ?*Table {
+    return switch (a.items.items[a.items.items.len - 1]) {
+        .table => |t| t,
+        else => null,
+    };
+}
+
 /// A parsed document. Owns an arena holding every string, table and array
 /// reachable from `root`; `deinit` frees all of it at once.
 pub const Document = struct {
@@ -120,7 +128,7 @@ pub const Document = struct {
                 .table => |t| cur = t,
                 .array => |a| {
                     if (!a.is_table_array or a.items.items.len == 0) return error.NotFound;
-                    cur = a.items.items[a.items.items.len - 1].table;
+                    cur = lastTable(a) orelse return error.NotFound;
                 },
                 else => return error.NotFound,
             }
@@ -142,7 +150,8 @@ pub const Document = struct {
                 return;
             },
             .array => |arr| if (arr.is_table_array and arr.items.items.len > 0) {
-                arr.items.items[arr.items.items.len - 1].table.header = own;
+                const t = lastTable(arr) orelse return error.NotFound;
+                t.header = own;
                 return;
             },
             else => {},

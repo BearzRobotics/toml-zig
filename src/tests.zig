@@ -986,6 +986,29 @@ test "writer: refuses values that would not read back" {
     try expectUnwritable(&key, error.InvalidValue);
 }
 
+test "writer: values that used to panic are errors" {
+    const nanos: toml.Datetime = .{ .time = .{ .hour = 1, .minute = 1, .second = 1, .nanosecond = 1_000_000_000 } };
+    var buf: [64]u8 = undefined;
+    try testing.expectError(error.NoSpaceLeft, std.fmt.bufPrint(&buf, "{f}", .{nanos}));
+    var doc = try toml.Document.init(testing.allocator);
+    defer doc.deinit();
+    try doc.set(&.{"a"}, .{ .datetime = nanos });
+    try expectUnwritable(&doc, error.InvalidValue);
+
+    // An array of tables holding something else, first and last.
+    for ([_]bool{ true, false }) |table_first| {
+        var mixed = try parseOk("[[a]]\nb = 1\n");
+        defer mixed.deinit();
+        const list = mixed.root.getArray("a").?;
+        try list.items.insert(mixed.allocator(), if (table_first) 1 else 0, .{ .integer = 1 });
+        try expectUnwritable(&mixed, error.InvalidValue);
+        if (table_first) {
+            try testing.expectError(error.NotFound, mixed.setComments(&.{"a"}, .{ .after = "# x" }));
+            try testing.expectError(error.NotFound, mixed.setComments(&.{ "a", "b" }, .{ .after = "# x" }));
+        }
+    }
+}
+
 test "writer: comment fields cannot inject TOML" {
     const bad = [_][]const u8{ "injected = true", "# a\ninjected = true", "# a\rb", "# \xff", "  " };
     for (bad) |line| {

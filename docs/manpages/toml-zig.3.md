@@ -189,7 +189,8 @@ file (or the order of insertion).
 plus `OutOfMemory` and `NestingTooDeep` (a tree more than 1024 tables and
 arrays deep, or one that contains itself) and `InvalidValue` (a string, key or
 comment that is not UTF-8, a malformed comment, or a `Datetime` that is not one
-of the four forms with every field in range). On either of these two, nothing
+of the four forms with every field in range, or an `is_table_array` array
+holding a non-table). On either of these two, nothing
 is written.
 
 `Syntax`

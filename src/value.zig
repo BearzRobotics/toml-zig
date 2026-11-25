@@ -38,6 +38,7 @@ pub const Datetime = struct {
         }
         if (self.time) |t| {
             if (t.hour > 23 or t.minute > 59 or t.second > 60) return false;
+            if (t.nanosecond >= std.time.ns_per_s) return false;
         }
         if (self.offset_minutes) |off| {
             if (self.date == null or self.time == null) return false;
@@ -53,7 +54,8 @@ pub const Datetime = struct {
             try w.print("{d:0>2}:{d:0>2}:{d:0>2}", .{ t.hour, t.minute, t.second });
             if (t.nanosecond != 0) {
                 var buf: [9]u8 = undefined;
-                _ = std.fmt.bufPrint(&buf, "{d:0>9}", .{t.nanosecond}) catch unreachable;
+                // Only a nanosecond count of a second or more does not fit.
+                _ = std.fmt.bufPrint(&buf, "{d:0>9}", .{t.nanosecond}) catch return error.WriteFailed;
                 var n: usize = 9;
                 while (buf[n - 1] == '0') n -= 1;
                 try w.print(".{s}", .{buf[0..n]});
@@ -109,7 +111,8 @@ pub const TableKind = enum {
 pub const Array = struct {
     items: std.ArrayList(Value) = .empty,
     /// True for an array created by `[[header]]`. Only such arrays may be
-    /// extended by another `[[header]]`.
+    /// extended by another `[[header]]`. Every element must then be a table;
+    /// `Document.write` refuses the tree otherwise.
     is_table_array: bool = false,
 };
 

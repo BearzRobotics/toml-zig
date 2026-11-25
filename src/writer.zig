@@ -19,8 +19,8 @@ pub const Error = Writer.Error || Allocator.Error || error{
     /// includes any table or array that contains itself.
     NestingTooDeep,
     /// Something in the tree has no TOML form: a string, key or comment that is
-    /// not UTF-8, a comment that `checkComments` rejects, or a `Datetime`
-    /// that is not `isValid`.
+    /// not UTF-8, a comment that `checkComments` rejects, a `Datetime` that
+    /// is not `isValid`, or an `is_table_array` array holding a non-table.
     InvalidValue,
 };
 
@@ -38,7 +38,10 @@ fn check(v: Value, depth: usize) Error!void {
         .table => |t| try checkTable(t, depth),
         .array => |a| {
             if (depth > max_nesting) return error.NestingTooDeep;
-            for (a.items.items) |item| try check(item, depth + 1);
+            for (a.items.items) |item| {
+                if (a.is_table_array and item != .table) return error.InvalidValue;
+                try check(item, depth + 1);
+            }
         },
         .integer, .float, .boolean => {},
     }
