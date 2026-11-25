@@ -602,6 +602,35 @@ test "bytes that are not UTF-8 are InvalidUtf8 wherever they are met" {
     try expectDiagnostic(.{ .src = "a = 1 \u{1F600}", .line = 1, .column = 7, .message = "expected end of line" });
 }
 
+test "a reused diagnostic never shows an earlier result" {
+    const gpa = testing.allocator;
+    var diag: toml.Diagnostic = .{};
+    try testing.expectError(error.Syntax, toml.Document.parse(gpa, "a = @", .{}, &diag));
+    var ok = try toml.Document.parse(gpa, "a = 1", .{}, &diag);
+    ok.deinit();
+    try testing.expectEqualDeep(toml.Diagnostic{}, diag);
+
+    var tr = TrickleReader.init("a = 1\nbb = 2\n", 1, 8);
+    try testing.expectError(error.ReadFailed, toml.Document.parseReader(gpa, &tr.interface, .{}, &diag));
+    try testing.expectEqualDeep(toml.Diagnostic{ .line = 2, .column = 3, .message = "read failed" }, diag);
+
+    // Out of memory at every point, including before parsing starts.
+    var index: usize = 0;
+    while (true) : (index += 1) {
+        diag = .{ .line = 99, .column = 99, .message = "stale" };
+        var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = index, .resize_fail_index = 0 });
+        var doc = toml.Document.parse(failing.allocator(), "a.b = [1, 2]\n", .{}, &diag) catch |e| {
+            try testing.expectEqual(error.OutOfMemory, e);
+            try testing.expectEqualStrings("out of memory", diag.message);
+            try testing.expect(diag.line >= 1 and diag.line <= 2 and diag.column >= 1);
+            continue;
+        };
+        doc.deinit();
+        break;
+    }
+    try testing.expect(index > 0);
+}
+
 test "diagnostics report line, column and message" {
     for ([_]Expected{
         .{ .src = "a = 1\nb = 2\nc = @\n", .line = 3, .column = 5, .message = "invalid integer" },

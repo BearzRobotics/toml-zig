@@ -205,9 +205,11 @@ is written.
 `LimitExceeded`
 : `max_bytes`, `max_depth` or `max_key_depth` exceeded.
 
-Only the first error is reported. If a `Diagnostic` was given it receives the
+Only the first error is reported. If a `Diagnostic` was given it is cleared
 
-position and a short message. On any error no memory is leaked.
+when parsing starts, and on any failure receives the position and a short
+
+message (for `OutOfMemory` and `ReadFailed`, where parsing had got to). On any error no memory is leaked.
 
 # OWNERSHIP AND LIFETIME
 

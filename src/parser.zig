@@ -97,13 +97,19 @@ pub fn parse(gpa: Allocator, arena: Allocator, root: *Table, r: *Io.Reader, opti
     };
     defer p.scratch.deinit(gpa);
     defer p.pending.deinit(gpa);
-    if (try p.s.peekAt(0) == 0xEF and try p.s.peekAt(1) == 0xBB and try p.s.peekAt(2) == 0xBF) {
-        for (0..3) |_| try p.s.bump();
-        p.s.col = 1; // editors give the mark no column
-    }
-    root.kind = .explicit;
-    try p.document();
-    try p.s.finish();
+    if (diag) |d| d.* = .{};
+    p.input() catch |e| {
+        // Every other error records its own message where it is found.
+        const message: ?[]const u8 = switch (e) {
+            error.OutOfMemory => "out of memory",
+            error.ReadFailed => "read failed",
+            else => null,
+        };
+        if (diag) |d| if (message) |m| {
+            d.* = .{ .line = p.s.line, .column = p.s.col, .message = m };
+        };
+        return e;
+    };
 }
 
 /// Byte source over a `Reader`: lookahead, consumption, and bookkeeping.
@@ -271,6 +277,17 @@ const Parser = struct {
     /// Are the next three bytes all `c`?
     fn peekTriple(self: *Parser, c: u8) ReadError!bool {
         return (try self.s.peek()) == c and (try self.s.peekAt(1)) == c and (try self.s.peekAt(2)) == c;
+    }
+
+    /// The whole input: an optional byte-order mark, then the document.
+    fn input(self: *Parser) ReadError!void {
+        if (try self.s.peekAt(0) == 0xEF and try self.s.peekAt(1) == 0xBB and try self.s.peekAt(2) == 0xBF) {
+            for (0..3) |_| try self.s.bump();
+            self.s.col = 1; // editors give the mark no column
+        }
+        self.root.kind = .explicit;
+        try self.document();
+        try self.s.finish();
     }
 
     // ---- lexical helpers -------------------------------------------------

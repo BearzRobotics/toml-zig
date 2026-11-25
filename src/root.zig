@@ -51,10 +51,19 @@ pub const Document = struct {
         return .{ .arena = arena, .root = root };
     }
 
+    /// `init` for the parse functions, which must also report running out of
+    /// memory before the parser starts.
+    fn initFor(gpa: Allocator, diag: ?*Diagnostic) Allocator.Error!Document {
+        return init(gpa) catch |e| {
+            if (diag) |d| d.* = .{ .line = 1, .column = 1, .message = "out of memory" };
+            return e;
+        };
+    }
+
     /// Parses `source` (UTF-8). `source` is not retained. On failure the
     /// optional `diag` receives a 1-based line and column.
     pub fn parse(gpa: Allocator, source: []const u8, options: Options, diag: ?*Diagnostic) ParseError!Document {
-        var doc = try init(gpa);
+        var doc = try initFor(gpa, diag);
         errdefer doc.deinit();
         var r: std.Io.Reader = .fixed(source);
         @import("parser.zig").parse(gpa, doc.arena.allocator(), doc.root, &r, options, diag) catch |e| switch (e) {
@@ -69,7 +78,7 @@ pub const Document = struct {
     /// `options.max_bytes` have been consumed, and with `error.ReadFailed` if
     /// `r` does.
     pub fn parseReader(gpa: Allocator, r: *std.Io.Reader, options: Options, diag: ?*Diagnostic) ParseReaderError!Document {
-        var doc = try init(gpa);
+        var doc = try initFor(gpa, diag);
         errdefer doc.deinit();
         try @import("parser.zig").parse(gpa, doc.arena.allocator(), doc.root, r, options, diag);
         return doc;
