@@ -316,6 +316,20 @@ test "floats: invalid" {
     try expectInvalid("a = 0x1p3");
 }
 
+test "floats: too large for 64 bits is an error, not infinity" {
+    for ([_][]const u8{ "a = 1e400", "a = -1e400", "a = +1.8e308", "a = 1_0.0e3_08" }) |src| {
+        try expectInvalid(src);
+        try expectDiagnostic(.{ .src = src, .line = 1, .column = 5, .message = "float out of range" });
+    }
+    // The largest finite value, and values that round toward zero, still load.
+    var doc = try parseOk("max = 1.7976931348623157e308\nmin = -1.7976931348623157e308\ntiny = 1e-400\ni = -inf\n");
+    defer doc.deinit();
+    try testing.expectEqual(std.math.floatMax(f64), doc.root.getFloat("max").?);
+    try testing.expectEqual(-std.math.floatMax(f64), doc.root.getFloat("min").?);
+    try testing.expectEqual(@as(f64, 0), doc.root.getFloat("tiny").?);
+    try testing.expect(std.math.isNegativeInf(doc.root.getFloat("i").?));
+}
+
 test "booleans" {
     var doc = try parseOk("a = true\nb = false\n");
     defer doc.deinit();

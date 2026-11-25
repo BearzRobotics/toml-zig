@@ -933,6 +933,9 @@ const Parser = struct {
         if (i != s.len) return self.errAt(start, "invalid float");
         const clean = try self.stripUnderscores(s, 0) orelse return self.errAt(start, "invalid float");
         const f = std.fmt.parseFloat(f64, clean) catch return self.errAt(start, "invalid float");
+        // `inf` itself was handled above, so this is a number too large for
+        // f64. Loading it as infinity would change the file when saved.
+        if (std.math.isInf(f)) return self.errAt(start, "float out of range");
         return .{ .float = if (neg) -f else f };
     }
 

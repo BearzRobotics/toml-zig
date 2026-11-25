@@ -212,7 +212,9 @@ Accepts TOML 1.1.0 by default and TOML 1.0.0 with `Options.version = .v1_0`.
 
 Input must be UTF-8; a leading byte-order mark is skipped. Integers are 64-bit
 
-signed; a literal outside that range is an error. Datetime fractions beyond
+signed; a literal outside that range is an error, as is a float too large for
+
+64 bits (write `inf` for infinity). Datetime fractions beyond
 
 nanoseconds are truncated. The official `toml-test` suite has not been run
 

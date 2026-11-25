@@ -313,6 +313,8 @@ file system.
   string, so `getInt("height")` is `null`.
 - Do not keep a string from the document after `deinit`.
 - `lookup("a.b")` will not find a key literally named `"a.b"`.
-- Integers are `i64`; a larger literal is a `Syntax` error.
+- Integers are `i64`; a larger literal is a `Syntax` error. So is a float too
+  large for `f64` (such as `1e400`). Write `inf` for infinity. A value too
+  small to represent rounds to zero.
 - `put` on a `Table` does not copy the key or value; use `doc.set`, or
   allocate from `doc.allocator()` yourself.
