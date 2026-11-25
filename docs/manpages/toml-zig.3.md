@@ -217,8 +217,9 @@ message (for `OutOfMemory` and `ReadFailed`, where parsing had got to). On any e
 - Strings, tables and arrays returned by getters are borrowed from the
   document and become invalid at `deinit`.
 - Anything stored with `set` or `put` must be allocated from
-  `doc.allocator()`. Use `doc.dupe` for strings; a string literal or a slice of
-  caller memory dangles once its owner goes away.
+  `doc.allocator()`, or live at least as long as the document, as a string
+  literal does. Use `doc.dupe` for strings: a slice of caller memory dangles
+  once its owner frees or reuses it.
 - Replacing or removing a value does not free its old storage; it is reclaimed
   with the whole arena. A long-lived document edited in a loop therefore
   grows. Re-parse or rebuild such a document periodically.
@@ -233,7 +234,7 @@ scalar and dotted keys are written before sub-tables. Dotted keys stay dotted. S
 quoting needed to be valid, and a tree with no TOML form is refused (see
 ERRORS). Output is valid under both TOML 1.0 and 1.1 and
 
-parses back to an equal tree.
+parses back to the same keys and values.
 
 Comments are preserved through parse, edit and write: lines above a key or
 
@@ -280,7 +281,9 @@ try doc.set(&.{ "panel", "height" }, .{ .integer = 40 });
 try doc.write(gpa, &out_writer.interface);
 ```
 
-More in `docs/api.md`; every example there is compiled by `zig build test`.
+More in `docs/api.md`; `src/api_examples.zig` holds tested copies of its
+
+examples.
 
 # LIMITATIONS
 
@@ -289,9 +292,10 @@ More in `docs/api.md`; every example there is compiled by `zig build test`.
   of blank lines collapse to one.
 - Datetime fractions beyond nanoseconds are truncated.
 - `Table.lookup` cannot reach keys containing a dot.
-- The official `toml-test` suite has not been run; conformance is based on the
-  specification's own examples and invalid cases. Treat full conformance as
-  unverified.
+- The decoder cases of the official `toml-test` suite pass for 1.0.0 and 1.1.0
+  (`zig build conformance`). Its encoder mode, which checks written output with
+  an independent parser, has not been run.
+
 - Memory from replaced values is not reclaimed until `deinit`.
 
 # RESOURCE USAGE

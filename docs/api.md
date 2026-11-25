@@ -2,8 +2,9 @@
 
 How to read, change and write TOML by hand with toml-zig. For a terse
 reference see `docs/manpages/toml-zig.3.md`; for the file syntax see
-`docs/manpages/toml-syntax.5.md`. Every example here is compiled and run by
-`zig build test` (`src/api_examples.zig`), against Zig 0.17.
+`docs/manpages/toml-syntax.5.md`. The examples here have counterparts in
+`src/api_examples.zig`, which `zig build test` compiles and runs against
+Zig 0.17. They are copies kept by hand, adapted to test their results.
 
 Examples use this file, called `config` below:
 
@@ -149,6 +150,7 @@ for (widgets.items.items) |item| {
 TOML allows mixed-type arrays, so for plain arrays check each element's tag:
 
 ```zig
+// `arr` is any `*toml.Array`; `use` stands for your own code.
 for (arr.items.items) |item| switch (item) {
     .integer => |n| use(n),
     else => {},
@@ -196,7 +198,8 @@ integers, floats and booleans that is automatic. For strings, copy with
 try doc.set(&.{ "panel", "position" }, .{ .string = try doc.dupe("top") });
 ```
 
-Storing a string literal is safe, but a slice of memory you free later is not.
+Storing a string literal is safe, because it lives as long as the program. A
+slice of memory that you free or reuse later is not.
 When in doubt, `dupe`.
 
 `set` fails with `error.NotATable` if a path segment already holds something
@@ -287,7 +290,7 @@ try w.interface.flush();
 Output order is key insertion order, with scalar keys before sub-tables. Dotted
 keys stay dotted keys.
 Spacing, quote style and multi-line arrays are normalized. The result is valid
-TOML 1.0 and 1.1 and parses back to the same tree. To save safely, write to a
+TOML 1.0 and 1.1 and parses back to the same keys and values. To save safely, write to a
 temporary file and rename it over the original; the library does not touch the
 file system.
 

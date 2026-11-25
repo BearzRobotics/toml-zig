@@ -1,4 +1,4 @@
-//! toml-zig: a TOML 1.0.0 parser and writer.
+//! toml-zig: a TOML 1.1.0 (and 1.0.0) parser and writer.
 //!
 //! ```zig
 //! var diag: toml.Diagnostic = .{};

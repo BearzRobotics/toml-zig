@@ -167,7 +167,7 @@ the same thing. The writer's output is valid under both versions.
 - Adding keys to an inline table after the fact (`point.z = 3`) or reopening it with `[point]`.
 - Mixing `[[x]]` and `[x]` for the same name.
 - Expecting every comment to survive a save. Comments above a key or header, a trailing comment on its line, and comments after the last item are kept; comments *inside* an array or an inline table are dropped. See **toml-zig**(3), LIMITATIONS.
-- Putting a table-array element's keys after a sub-table header; the writer emits scalars before sub-tables, so a re-saved file may order keys differently from the original.
+- Writing an element's own keys after one of its sub-table headers: every key after a header belongs to that header, so they land in the sub-table.
 
 # EXAMPLES
 
@@ -216,9 +216,9 @@ signed; a literal outside that range is an error, as is a float too large for
 
 64 bits (write `inf` for infinity). Datetime fractions beyond
 
-nanoseconds are truncated. The official `toml-test` suite has not been run
+nanoseconds are truncated. The decoder cases of the official `toml-test` suite
 
-against this library (see `ai/SPEC.md`).
+pass (see `ai/SPEC.md`).
 
 # SEE ALSO
 

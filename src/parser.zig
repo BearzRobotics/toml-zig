@@ -1,5 +1,5 @@
-//! TOML 1.0.0 parser. Reference: https://toml.io/en/v1.0.0 (ABNF in the
-//! toml-lang/toml repository, toml.abnf at tag v1.0.0).
+//! TOML 1.1.0 and 1.0.0 parser. References: https://toml.io/en/v1.1.0 and
+//! https://toml.io/en/v1.0.0 (ABNF: toml.abnf in the toml-lang/toml repository).
 //!
 //! The parser pulls bytes from a `std.Io.Reader` through `Source`, which
 //! offers a few bytes of lookahead and tracks line, column, input size and

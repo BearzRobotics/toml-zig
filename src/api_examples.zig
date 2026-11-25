@@ -1,5 +1,6 @@
-//! The code shown in docs/api.md, compiled and run by `zig build test` so the
-//! documentation cannot drift from the library. Keep the two in step.
+//! The examples of docs/api.md as tests, run by `zig build test`. These are
+//! copies made by hand: nothing compares them with the Markdown, so change
+//! both together.
 
 const std = @import("std");
 const toml = @import("root.zig");
@@ -161,6 +162,57 @@ test "comments: survive an edit; setComments adds new ones" {
     try testing.expect(std.mem.indexOf(u8, out, "# pixels\nheight = 40 # was 32\n") != null);
     try testing.expect(std.mem.indexOf(u8, out, "position = \"bottom\" # top|bottom") != null);
     try testing.expectError(error.InvalidComment, doc.setComments(&.{"title"}, .{ .after = "no hash" }));
+}
+
+test "files: stream one in, write it back out" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "config.toml", .data = config });
+    var diag: toml.Diagnostic = .{};
+
+    var file = try tmp.dir.openFile(io, "config.toml", .{});
+    defer file.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = file.reader(io, &buf);
+    var doc = try toml.Document.parseReader(gpa, &reader.interface, .{}, &diag);
+    defer doc.deinit();
+
+    {
+        var out = try tmp.dir.createFile(io, "out.toml", .{});
+        defer out.close(io);
+        var out_buf: [4096]u8 = undefined;
+        var w = out.writer(io, &out_buf);
+        try doc.write(gpa, &w.interface);
+        try w.interface.flush();
+    }
+
+    const written = try tmp.dir.readFileAlloc(io, "out.toml", gpa, .limited(4096));
+    defer gpa.free(written);
+    const want = try doc.toOwnedString(gpa);
+    defer gpa.free(want);
+    try testing.expectEqualStrings(want, written);
+}
+
+test "read: walk a table and a mixed array" {
+    var doc = try toml.Document.parse(gpa, config ++ "[extra]\nmixed = [1, \"two\", 3]\n", .{}, null);
+    defer doc.deinit();
+
+    var names: std.ArrayList(u8) = .empty;
+    defer names.deinit(gpa);
+    var it = doc.root.getTable("panel").?.entries.iterator();
+    while (it.next()) |e| {
+        try names.print(gpa, "{s}: {s}\n", .{ e.key_ptr.*, e.value_ptr.*.typeName() });
+    }
+    try testing.expect(std.mem.startsWith(u8, names.items, "position: string\nheight: integer\n"));
+
+    const arr = doc.root.getTable("extra").?.getArray("mixed").?;
+    var sum: i64 = 0;
+    for (arr.items.items) |item| switch (item) {
+        .integer => |n| sum += n,
+        else => {},
+    };
+    try testing.expectEqual(@as(i64, 4), sum);
 }
 
 test "write: to any std.Io.Writer" {
