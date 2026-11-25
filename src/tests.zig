@@ -680,6 +680,85 @@ test "CRLF is kept inside both kinds of multi-line string" {
     try testing.expectEqualStrings("x\r\ny", doc.root.getString("l").?);
 }
 
+/// `n` dotted segments: "a.a.a".
+fn dottedKey(gpa: std.mem.Allocator, out: *std.ArrayList(u8), n: usize) !void {
+    for (0..n) |i| try out.appendSlice(gpa, if (i == 0) "a" else ".a");
+}
+
+/// `before`, a key of `n` segments, `after`.
+fn deepSource(n: usize, before: []const u8, after: []const u8) ![]u8 {
+    const gpa = testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, before);
+    try dottedKey(gpa, &out, n);
+    try out.appendSlice(gpa, after);
+    return out.toOwnedSlice(gpa);
+}
+
+test "max_key_depth bounds tables made by headers and dotted keys" {
+    const gpa = testing.allocator;
+    // Each form is `n` key segments deep in total, `fixed` of them in the text around the long key.
+    const forms = [_]struct { before: []const u8, after: []const u8, fixed: usize }{
+        .{ .before = "[", .after = "]", .fixed = 0 },
+        .{ .before = "[[", .after = "]]", .fixed = 0 },
+        .{ .before = "", .after = " = 1", .fixed = 0 },
+        .{ .before = "x = {", .after = " = 1}", .fixed = 1 },
+        .{ .before = "x = [{y = {", .after = " = 1}}]", .fixed = 2 },
+        .{ .before = "[t.u]\n", .after = " = 1", .fixed = 2 },
+        .{ .before = "[[t]]\nv = { w = 1 }\n", .after = " = 1", .fixed = 1 },
+    };
+    for (forms) |form| {
+        errdefer std.debug.print("form: {s}...{s}\n", .{ form.before, form.after });
+        const at_limit = try deepSource(128 - form.fixed, form.before, form.after);
+        defer gpa.free(at_limit);
+        var doc = try parseWith(V10, at_limit);
+        defer doc.deinit();
+        gpa.free(try doc.toOwnedString(gpa));
+        for ([_]usize{ 129 - form.fixed, 100_000 }) |n| {
+            const too_deep = try deepSource(n, form.before, form.after);
+            defer gpa.free(too_deep);
+            var diag: toml.Diagnostic = .{};
+            try testing.expectError(error.LimitExceeded, toml.Document.parse(gpa, too_deep, .{}, &diag));
+            try testing.expectEqualStrings("key nesting too deep", diag.message);
+        }
+    }
+    // Sibling keys and later sections do not add up.
+    try expectValid("[a.b]\nc.d = 1\ne.f = { g.h = 1, i.j = 2 }\n[k]\nl = 1\n");
+    var raised = try toml.Document.parse(gpa, "a.b.c = 1", .{ .max_key_depth = 3 }, null);
+    raised.deinit();
+    try testing.expectError(error.LimitExceeded, toml.Document.parse(gpa, "a.b.c = 1", .{ .max_key_depth = 2 }, null));
+}
+
+test "writer: a tree too deep to write is an error, not a stack overflow" {
+    const gpa = testing.allocator;
+    var doc = try toml.Document.init(gpa);
+    defer doc.deinit();
+    const path = try gpa.alloc([]const u8, 100_000);
+    defer gpa.free(path);
+    @memset(path, "a");
+    try doc.set(path, .{ .integer = 1 });
+    try testing.expectError(error.NestingTooDeep, doc.toOwnedString(gpa));
+
+    // The same through arrays, and a table that contains itself.
+    var arrays = try toml.Document.init(gpa);
+    defer arrays.deinit();
+    var v: toml.Value = .{ .integer = 1 };
+    for (0..100_000) |_| {
+        const arr = try arrays.allocator().create(toml.Array);
+        arr.* = .{};
+        try arr.items.append(arrays.allocator(), v);
+        v = .{ .array = arr };
+    }
+    try arrays.set(&.{"deep"}, v);
+    try testing.expectError(error.NestingTooDeep, arrays.toOwnedString(gpa));
+
+    var cycle = try toml.Document.init(gpa);
+    defer cycle.deinit();
+    try cycle.set(&.{"self"}, .{ .table = cycle.root });
+    try testing.expectError(error.NestingTooDeep, cycle.toOwnedString(gpa));
+}
+
 // ---- writing and round trips ---------------------------------------------
 
 test "writer: exact output for every value type and every escape" {

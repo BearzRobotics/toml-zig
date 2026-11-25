@@ -14,9 +14,35 @@ const Table = value.Table;
 const Comments = value.Comments;
 const Writer = std.Io.Writer;
 
-pub const Error = Writer.Error || Allocator.Error;
+pub const Error = Writer.Error || Allocator.Error || error{
+    /// More than `max_nesting` tables and arrays inside one another, which
+    /// includes any table or array that contains itself.
+    NestingTooDeep,
+};
+
+/// The most levels of tables and arrays the writer will descend. It recurses
+/// once per level, so this bounds its stack use.
+pub const max_nesting = 1024;
+
+/// Looks over the whole tree before anything is written, so that a tree that
+/// cannot be written produces no partial output.
+fn check(v: Value, depth: usize) Error!void {
+    switch (v) {
+        .table => |t| {
+            if (depth > max_nesting) return error.NestingTooDeep;
+            for (t.entries.values()) |sub| try check(sub, depth + 1);
+        },
+        .array => |a| {
+            if (depth > max_nesting) return error.NestingTooDeep;
+            for (a.items.items) |item| try check(item, depth + 1);
+        },
+        else => {},
+    }
+}
 
 pub fn writeTable(gpa: Allocator, w: *Writer, root: *const Table) Error!void {
+    // The root is level 0.
+    for (root.entries.values()) |v| try check(v, 1);
     var path: std.ArrayList([]const u8) = .empty;
     defer path.deinit(gpa);
     var first = true;

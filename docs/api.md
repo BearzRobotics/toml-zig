@@ -88,8 +88,14 @@ defer doc.deinit();
 ```zig
 .{}                                  // TOML 1.1, 16 MiB max, depth 64
 .{ .version = .v1_0 }                // reject 1.1-only syntax
-.{ .max_bytes = 1 << 20, .max_depth = 16 }   // tighter limits for untrusted input
+.{ .max_bytes = 1 << 20, .max_depth = 16, .max_key_depth = 16 }   // tighter limits for untrusted input
 ```
+
+`max_depth` (default 64) limits arrays and inline tables inside one another.
+`max_key_depth` (default 128) limits the key segments from the root to a value,
+counting `[a.b.c]` headers and dotted keys. `write` returns
+`error.NestingTooDeep` for a tree more than 1024 levels deep, which only code
+that builds trees itself (or raises these limits) can produce.
 
 Exceeding a limit gives `error.LimitExceeded`.
 

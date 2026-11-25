@@ -94,7 +94,8 @@ key segments (`&.{ "a", "b", "c" }`, for `set` and `setComments`).
 
 **Options**
 : `version: Version = .v1_1`, `max_depth: u32 = 64` (nesting of arrays plus
-  inline tables), `max_bytes: usize = 16 MiB`.
+  inline tables), `max_key_depth: u32 = 128` (key segments from the root to a
+  value, counting headers and dotted keys), `max_bytes: usize = 16 MiB`.
 
 **Version**
 : `.v1_0` or `.v1_1`.
@@ -185,7 +186,8 @@ file (or the order of insertion).
 
 `ParseReaderError` adds `ReadFailed`. `WriteError` is `std.Io.Writer.Error`
 
-plus `OutOfMemory`.
+plus `OutOfMemory` and `NestingTooDeep` (a tree more than 1024 tables and
+arrays deep, or one that contains itself; nothing is written).
 
 `Syntax`
 : Malformed TOML, or a construct TOML forbids: duplicate key, redefined table,
@@ -196,7 +198,7 @@ plus `OutOfMemory`.
 : Input is not UTF-8.
 
 `LimitExceeded`
-: `max_bytes` or `max_depth` exceeded.
+: `max_bytes`, `max_depth` or `max_key_depth` exceeded.
 
 Only the first error is reported. If a `Diagnostic` was given it receives the
 

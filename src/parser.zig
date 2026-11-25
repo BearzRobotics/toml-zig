@@ -45,6 +45,12 @@ pub const Options = struct {
     version: Version = .v1_1,
     /// Maximum nesting of arrays plus inline tables. Bounds recursion depth.
     max_depth: u32 = 64,
+    /// Maximum number of key segments on the way from the root to a value,
+    /// counting `[header]` segments and dotted keys, also those inside inline
+    /// tables. Every segment but the last is a table, and `Document.write`
+    /// recurses once per table. The writer refuses trees nested more than
+    /// `writer.max_nesting` levels, whatever is allowed here.
+    max_key_depth: u32 = 128,
     /// Maximum input size in bytes.
     max_bytes: usize = 16 * 1024 * 1024,
 };
@@ -209,6 +215,8 @@ const Parser = struct {
     /// Text being assembled: bare keys, string bodies, scalar tokens.
     scratch: std.ArrayList(u8) = .empty,
     depth: u32 = 0,
+    /// Key segments between the root and the table now receiving keys.
+    key_depth: usize = 0,
     /// Comment and blank lines seen since the last item; they become the
     /// `before` of the next one. Lines are arena-owned, the list is not.
     pending: std.ArrayList([]const u8) = .empty,
@@ -369,6 +377,8 @@ const Parser = struct {
         const keys = try self.key();
         try self.skipWs();
         if (!try self.eat(']')) return self.err("expected ']'");
+        try self.checkKeyDepth(keys.len, start);
+        self.key_depth = keys.len;
 
         const parent = try self.walk(self.root, keys[0 .. keys.len - 1], start);
         const last = keys[keys.len - 1];
@@ -396,6 +406,8 @@ const Parser = struct {
         const keys = try self.key();
         try self.skipWs();
         if (!try self.eat(']') or !try self.eat(']')) return self.err("expected ']]'");
+        try self.checkKeyDepth(keys.len, start);
+        self.key_depth = keys.len;
 
         const parent = try self.walk(self.root, keys[0 .. keys.len - 1], start);
         const last = keys[keys.len - 1];
@@ -452,6 +464,12 @@ const Parser = struct {
 
     // ---- keys and values -------------------------------------------------
 
+    fn checkKeyDepth(self: *Parser, depth: usize, at: Loc) Error!void {
+        if (depth > self.options.max_key_depth) {
+            return self.s.fail(at, "key nesting too deep", error.LimitExceeded);
+        }
+    }
+
     /// key = value, where key may be dotted. Inserts into `table`.
     fn keyValue(self: *Parser, table: *Table) ReadError!struct { table: *Table, key: []const u8 } {
         const start = self.s.loc();
@@ -459,6 +477,12 @@ const Parser = struct {
         try self.skipWs();
         if (!try self.eat('=')) return self.err("expected '=' after key");
         try self.skipWs();
+
+        // Keys inside the value (an inline table) start below this one.
+        const outer_depth = self.key_depth;
+        try self.checkKeyDepth(outer_depth + keys.len, start);
+        self.key_depth = outer_depth + keys.len;
+        defer self.key_depth = outer_depth;
 
         // Dotted keys create tables that only dotted keys may extend.
         var cur = table;
