@@ -579,6 +579,29 @@ fn expectDiagnostic(x: Expected) !void {
     try testing.expectEqualStrings(x.message, diag.message);
 }
 
+test "bytes that are not UTF-8 are InvalidUtf8 wherever they are met" {
+    const Case = struct { []const u8, usize, usize };
+    for ([_]Case{
+        // Places where the grammar stops before taking the byte.
+        .{ "\xff = 1", 1, 1 },
+        .{ "a = 1\n\xff", 2, 1 },
+        .{ "a = 1 \xff", 1, 7 },
+        .{ "[\xff]", 1, 2 },
+        .{ "[a\xff]", 1, 3 },
+        .{ "a \xc0\x80", 1, 3 },
+        .{ "a = [1 \xed\xa0\x80]", 1, 8 },
+        .{ "a = {b = 1 \xe2\x82", 1, 12 },
+        .{ "a = 1 \x80", 1, 7 },
+    }) |c| {
+        try expectDiagnostic(.{ .src = c[0], .err = error.InvalidUtf8, .line = c[1], .column = c[2], .message = "invalid UTF-8" });
+        const r = (try rejects(V11, c[0])).?;
+        try testing.expectEqual(@as(anyerror, error.InvalidUtf8), r.err);
+    }
+    // Well-formed text in the wrong place is still a syntax error.
+    try expectDiagnostic(.{ .src = "\u{e9} = 1", .line = 1, .column = 1, .message = "expected key" });
+    try expectDiagnostic(.{ .src = "a = 1 \u{1F600}", .line = 1, .column = 7, .message = "expected end of line" });
+}
+
 test "diagnostics report line, column and message" {
     for ([_]Expected{
         .{ .src = "a = 1\nb = 2\nc = @\n", .line = 3, .column = 5, .message = "invalid integer" },

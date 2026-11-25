@@ -200,6 +200,26 @@ const Source = struct {
         self.col += 1; // one column per code point
     }
 
+    /// For the error path: the grammar can reject a byte without consuming
+    /// it, so `bump` has not validated it. Fails with `InvalidUtf8` if the
+    /// character at the current position is not well-formed UTF-8.
+    fn checkNext(self: *Source) ReadError!void {
+        const at = self.loc();
+        const first = (try self.peek()) orelse return self.finish();
+        if (self.need > 0) {
+            if (first < self.lo or first > self.hi) return self.fail(at, "invalid UTF-8", error.InvalidUtf8);
+            return;
+        }
+        if (first < 0x80) return;
+        const len = std.unicode.utf8ByteSequenceLength(first) catch
+            return self.fail(at, "invalid UTF-8", error.InvalidUtf8);
+        var buf: [max_lookahead]u8 = undefined;
+        for (0..len) |i| {
+            buf[i] = (try self.peekAt(i)) orelse return self.fail(at, "invalid UTF-8", error.InvalidUtf8);
+        }
+        if (!std.unicode.utf8ValidateSlice(buf[0..len])) return self.fail(at, "invalid UTF-8", error.InvalidUtf8);
+    }
+
     /// Call once the input is exhausted: a multi-byte sequence must not be cut short.
     fn finish(self: *Source) Error!void {
         if (self.need != 0) return self.fail(self.loc(), "invalid UTF-8", error.InvalidUtf8);
@@ -226,7 +246,9 @@ const Parser = struct {
     /// Has any item been parsed yet? Blank lines before the first one are dropped.
     seen_item: bool = false,
 
-    fn err(self: *Parser, msg: []const u8) Error {
+    /// A syntax error at the current position.
+    fn err(self: *Parser, msg: []const u8) ReadError {
+        self.s.checkNext() catch |e| return e;
         return self.s.fail(self.s.loc(), msg, error.Syntax);
     }
 
