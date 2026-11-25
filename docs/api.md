@@ -264,6 +264,10 @@ const out = try doc.toOwnedString(gpa);
 defer gpa.free(out);
 ```
 
+`write` first checks the whole tree. If something has no TOML form (text that
+is not UTF-8, a comment line that does not start with `#`, a date such as
+month 13) it returns `error.InvalidValue` and writes nothing.
+
 To any `std.Io.Writer`, such as a file:
 
 ```zig

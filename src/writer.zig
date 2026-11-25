@@ -18,6 +18,10 @@ pub const Error = Writer.Error || Allocator.Error || error{
     /// More than `max_nesting` tables and arrays inside one another, which
     /// includes any table or array that contains itself.
     NestingTooDeep,
+    /// Something in the tree has no TOML form: a string, key or comment that is
+    /// not UTF-8, a comment that `checkComments` rejects, or a `Datetime`
+    /// that is not `isValid`.
+    InvalidValue,
 };
 
 /// The most levels of tables and arrays the writer will descend. It recurses
@@ -25,24 +29,42 @@ pub const Error = Writer.Error || Allocator.Error || error{
 pub const max_nesting = 1024;
 
 /// Looks over the whole tree before anything is written, so that a tree that
-/// cannot be written produces no partial output.
+/// cannot be written produces no partial output. The fields it checks are all
+/// public, so nothing else guarantees them.
 fn check(v: Value, depth: usize) Error!void {
     switch (v) {
-        .table => |t| {
-            if (depth > max_nesting) return error.NestingTooDeep;
-            for (t.entries.values()) |sub| try check(sub, depth + 1);
-        },
+        .string => |s| try checkText(s),
+        .datetime => |d| if (!d.isValid()) return error.InvalidValue,
+        .table => |t| try checkTable(t, depth),
         .array => |a| {
             if (depth > max_nesting) return error.NestingTooDeep;
             for (a.items.items) |item| try check(item, depth + 1);
         },
-        else => {},
+        .integer, .float, .boolean => {},
     }
 }
 
+fn checkTable(t: *const Table, depth: usize) Error!void {
+    if (depth > max_nesting) return error.NestingTooDeep;
+    try checkComment(t.header);
+    for (t.key_comments.values()) |c| try checkComment(c);
+    for (t.entries.keys(), t.entries.values()) |k, sub| {
+        try checkText(k);
+        try check(sub, depth + 1);
+    }
+}
+
+fn checkText(s: []const u8) error{InvalidValue}!void {
+    if (!std.unicode.utf8ValidateSlice(s)) return error.InvalidValue;
+}
+
+fn checkComment(c: Comments) error{InvalidValue}!void {
+    value.checkComments(c) catch return error.InvalidValue;
+}
+
 pub fn writeTable(gpa: Allocator, w: *Writer, root: *const Table) Error!void {
-    // The root is level 0.
-    for (root.entries.values()) |v| try check(v, 1);
+    try checkTable(root, 0);
+    try checkComment(.{ .before = root.footer });
     var path: std.ArrayList([]const u8) = .empty;
     defer path.deinit(gpa);
     var first = true;

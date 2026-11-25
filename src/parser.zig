@@ -977,14 +977,6 @@ fn digits(s: []const u8, comptime n: usize) ?u32 {
     return v;
 }
 
-fn daysInMonth(year: u32, month: u32) u32 {
-    return switch (month) {
-        1, 3, 5, 7, 8, 10, 12 => 31,
-        4, 6, 9, 11 => 30,
-        else => if ((year % 4 == 0 and year % 100 != 0) or year % 400 == 0) 29 else 28,
-    };
-}
-
 /// `HH:MM:SS[.frac]`; with `optional_seconds` (TOML 1.1) also `HH:MM`.
 fn parseTime(s: []const u8, optional_seconds: bool, out_len: *usize) ?value.Time {
     const h = digits(s, 2) orelse return null;
@@ -1022,7 +1014,7 @@ fn parseDatetime(tok: []const u8, optional_seconds: bool) ?Datetime {
         const y = digits(tok, 4) orelse return null;
         const mo = digits(tok[5..], 2) orelse return null;
         const d = digits(tok[8..], 2) orelse return null;
-        if (mo < 1 or mo > 12 or d < 1 or d > daysInMonth(y, mo)) return null;
+        if (mo < 1 or mo > 12 or d < 1 or d > value.daysInMonth(y, mo)) return null;
         dt.date = .{ .year = @intCast(y), .month = @intCast(mo), .day = @intCast(d) };
         rest = tok[10..];
         if (rest.len == 0) return dt;

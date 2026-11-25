@@ -938,6 +938,84 @@ test "writer: an implicit table gets a header once it holds a dotted key" {
     try testing.expectEqualStrings("[a]\nc.d = 1\n\n[a.b]\n", out);
 }
 
+fn expectUnwritable(doc: *const toml.Document, want: anyerror) !void {
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    try testing.expectError(want, doc.write(testing.allocator, &aw.writer));
+    // Refused before any output, so a half-written file is never produced.
+    try testing.expectEqual(@as(usize, 0), aw.written().len);
+}
+
+test "writer: refuses values that would not read back" {
+    const date: toml.Date = .{ .year = 2024, .month = 1, .day = 1 };
+    const time: toml.Time = .{ .hour = 1, .minute = 2, .second = 3 };
+    const bad = [_]toml.Value{
+        .{ .string = "\xff" },
+        .{ .string = "cut \xe2\x82" },
+        .{ .datetime = .{} },
+        .{ .datetime = .{ .offset_minutes = 0 } },
+        .{ .datetime = .{ .date = date, .offset_minutes = 0 } },
+        .{ .datetime = .{ .time = time, .offset_minutes = 0 } },
+        .{ .datetime = .{ .date = date, .time = time, .offset_minutes = 24 * 60 } },
+        .{ .datetime = .{ .date = date, .time = time, .offset_minutes = -24 * 60 } },
+        .{ .datetime = .{ .date = .{ .year = 10000, .month = 1, .day = 1 } } },
+        .{ .datetime = .{ .date = .{ .year = 2024, .month = 0, .day = 1 } } },
+        .{ .datetime = .{ .date = .{ .year = 2024, .month = 13, .day = 1 } } },
+        .{ .datetime = .{ .date = .{ .year = 2024, .month = 1, .day = 0 } } },
+        .{ .datetime = .{ .date = .{ .year = 2023, .month = 2, .day = 29 } } },
+        .{ .datetime = .{ .time = .{ .hour = 24, .minute = 0, .second = 0 } } },
+        .{ .datetime = .{ .time = .{ .hour = 0, .minute = 60, .second = 0 } } },
+        .{ .datetime = .{ .time = .{ .hour = 0, .minute = 0, .second = 61 } } },
+    };
+    for (bad) |v| {
+        var doc = try parseOk("first = 1\n");
+        defer doc.deinit();
+        try doc.set(&.{ "t", "v" }, v);
+        try expectUnwritable(&doc, error.InvalidValue);
+        // Also inside an array and an inline table.
+        const arr = try doc.allocator().create(toml.Array);
+        arr.* = .{};
+        try arr.items.append(doc.allocator(), v);
+        try doc.set(&.{ "t", "v" }, .{ .array = arr });
+        try expectUnwritable(&doc, error.InvalidValue);
+    }
+
+    var key = try parseOk("first = 1\n");
+    defer key.deinit();
+    try key.set(&.{"\xff"}, .{ .integer = 1 });
+    try expectUnwritable(&key, error.InvalidValue);
+}
+
+test "writer: comment fields cannot inject TOML" {
+    const bad = [_][]const u8{ "injected = true", "# a\ninjected = true", "# a\rb", "# \xff", "  " };
+    for (bad) |line| {
+        errdefer std.debug.print("comment: {f}\n", .{std.zig.fmtString(line)});
+        // Each way of storing a comment that skips `setComments`.
+        for (0..5) |where| {
+            var doc = try parseOk("a = 1\n[t]\nb = 2\n");
+            defer doc.deinit();
+            const lines = try doc.allocator().dupe([]const u8, &.{line});
+            const t = doc.root.getTable("t").?;
+            switch (where) {
+                0 => doc.root.footer = lines,
+                1 => t.header = .{ .before = lines },
+                2 => t.header = .{ .after = line },
+                3 => try t.key_comments.put(doc.allocator(), "b", .{ .before = lines }),
+                else => try t.key_comments.put(doc.allocator(), "b", .{ .after = line }),
+            }
+            try expectUnwritable(&doc, error.InvalidValue);
+        }
+    }
+    var doc = try parseOk("a = 1\n");
+    defer doc.deinit();
+    try testing.expectError(error.InvalidComment, doc.setComments(&.{"a"}, .{ .after = "# \xff" }));
+    try testing.expectError(error.InvalidComment, doc.setComments(&.{"a"}, .{ .before = &.{"# \xc0\x80"} }));
+    try doc.setComments(&.{"a"}, .{ .before = &.{ "  # indented", "" }, .after = "# caf\u{e9}\ttab" });
+    const out = try doc.toOwnedString(testing.allocator);
+    defer testing.allocator.free(out);
+    try roundTrip(out);
+}
+
 test "writer: floats always look like floats" {
     var doc = try parseOk("a = 3.0\nb = 1e22\nc = inf\nd = -inf\ne = nan\n");
     defer doc.deinit();

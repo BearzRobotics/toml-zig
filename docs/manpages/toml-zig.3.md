@@ -187,7 +187,10 @@ file (or the order of insertion).
 `ParseReaderError` adds `ReadFailed`. `WriteError` is `std.Io.Writer.Error`
 
 plus `OutOfMemory` and `NestingTooDeep` (a tree more than 1024 tables and
-arrays deep, or one that contains itself; nothing is written).
+arrays deep, or one that contains itself) and `InvalidValue` (a string, key or
+comment that is not UTF-8, a malformed comment, or a `Datetime` that is not one
+of the four forms with every field in range). On either of these two, nothing
+is written.
 
 `Syntax`
 : Malformed TOML, or a construct TOML forbids: duplicate key, redefined table,
@@ -222,7 +225,8 @@ The writer is deterministic. Keys appear in insertion order, except that
 
 scalar and dotted keys are written before sub-tables. Dotted keys stay dotted. Strings are written with the
 
-quoting needed to be valid. Output is valid under both TOML 1.0 and 1.1 and
+quoting needed to be valid, and a tree with no TOML form is refused (see
+ERRORS). Output is valid under both TOML 1.0 and 1.1 and
 
 parses back to an equal tree.
 

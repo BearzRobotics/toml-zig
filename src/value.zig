@@ -28,6 +28,24 @@ pub const Datetime = struct {
     /// Minutes east of UTC. `0` means "Z" or "+00:00". Only set with date and time.
     offset_minutes: ?i16 = null,
 
+    /// True if this is one of the four forms above and every field is in
+    /// range, so that it can be written as TOML.
+    pub fn isValid(self: Datetime) bool {
+        if (self.date == null and self.time == null) return false;
+        if (self.date) |d| {
+            if (d.year > 9999 or d.month < 1 or d.month > 12) return false;
+            if (d.day < 1 or d.day > daysInMonth(d.year, d.month)) return false;
+        }
+        if (self.time) |t| {
+            if (t.hour > 23 or t.minute > 59 or t.second > 60) return false;
+        }
+        if (self.offset_minutes) |off| {
+            if (self.date == null or self.time == null) return false;
+            if (off < -(23 * 60 + 59) or off > 23 * 60 + 59) return false;
+        }
+        return true;
+    }
+
     pub fn format(self: Datetime, w: *std.Io.Writer) std.Io.Writer.Error!void {
         if (self.date) |d| try w.print("{d:0>4}-{d:0>2}-{d:0>2}", .{ d.year, d.month, d.day });
         if (self.date != null and self.time != null) try w.writeByte('T');
@@ -51,6 +69,15 @@ pub const Datetime = struct {
         }
     }
 };
+
+/// `month` is 1 to 12.
+pub fn daysInMonth(year: u32, month: u32) u32 {
+    return switch (month) {
+        1, 3, 5, 7, 8, 10, 12 => 31,
+        4, 6, 9, 11 => 30,
+        else => if ((year % 4 == 0 and year % 100 != 0) or year % 400 == 0) 29 else 28,
+    };
+}
 
 pub const Value = union(enum) {
     string: []const u8,
@@ -223,7 +250,7 @@ pub const Table = struct {
 
 /// A comment line must be empty or start with `#` (after optional blanks); a
 /// trailing comment must start with `#`; neither may contain a line break or a
-/// control character other than tab.
+/// control character other than tab, and both must be UTF-8.
 pub fn checkComments(c: Comments) error{InvalidComment}!void {
     for (c.before) |l| {
         if (l.len != 0) try checkLine(std.mem.trimStart(u8, l, " \t"));
@@ -233,6 +260,7 @@ pub fn checkComments(c: Comments) error{InvalidComment}!void {
 
 fn checkLine(l: []const u8) error{InvalidComment}!void {
     if (l.len == 0 or l[0] != '#') return error.InvalidComment;
+    if (!std.unicode.utf8ValidateSlice(l)) return error.InvalidComment;
     for (l) |ch| {
         if (ch == '\t') continue;
         if (ch < 0x20 or ch == 0x7F) return error.InvalidComment;
