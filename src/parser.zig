@@ -827,7 +827,7 @@ const Parser = struct {
                 'o' => 8,
                 else => 2,
             };
-            const body = self.stripUnderscores(s[2..], base, start) orelse return self.errAt(start, "invalid integer");
+            const body = try self.stripUnderscores(s[2..], base) orelse return self.errAt(start, "invalid integer");
             const u = std.fmt.parseInt(u63, body, base) catch return self.errAt(start, "integer out of range");
             return .{ .integer = u };
         }
@@ -839,7 +839,7 @@ const Parser = struct {
         if (!is_float) {
             if (s.len == 0) return self.errAt(start, "invalid number");
             if (s.len > 1 and s[0] == '0') return self.errAt(start, "leading zeros are not allowed");
-            const body = self.stripUnderscores(s, 10, start) orelse return self.errAt(start, "invalid integer");
+            const body = try self.stripUnderscores(s, 10) orelse return self.errAt(start, "invalid integer");
             const buf = try self.arena.alloc(u8, body.len + 1);
             buf[0] = if (neg) '-' else '+';
             @memcpy(buf[1..], body);
@@ -867,7 +867,7 @@ const Parser = struct {
             i = exp_end;
         }
         if (i != s.len) return self.errAt(start, "invalid float");
-        const clean = self.stripUnderscores(s, 0, start) orelse return self.errAt(start, "invalid float");
+        const clean = try self.stripUnderscores(s, 0) orelse return self.errAt(start, "invalid float");
         const f = std.fmt.parseFloat(f64, clean) catch return self.errAt(start, "invalid float");
         return .{ .float = if (neg) -f else f };
     }
@@ -875,10 +875,12 @@ const Parser = struct {
     /// Validates underscore placement (only between digits) and returns the
     /// digits without them. `base == 0` means "a float body": '.', 'e', 'E',
     /// '+' and '-' count as non-digit separators that underscores may not touch.
-    fn stripUnderscores(self: *Parser, s: []const u8, base: u8, start: Loc) ?[]const u8 {
-        _ = start;
+    /// Null means `s` is malformed. The result may be `s` itself.
+    fn stripUnderscores(self: *Parser, s: []const u8, base: u8) Allocator.Error!?[]const u8 {
         if (s.len == 0) return null;
-        const out = self.arena.alloc(u8, s.len) catch return null;
+        // Most numbers have no underscore and need no copy.
+        const copy = std.mem.indexOfScalar(u8, s, '_') != null;
+        const out: []u8 = if (copy) try self.arena.alloc(u8, s.len) else &.{};
         var n: usize = 0;
         for (s, 0..) |c, idx| {
             if (c == '_') {
@@ -887,10 +889,10 @@ const Parser = struct {
                 continue;
             }
             if (base != 0 and !isDigitOf(c, base)) return null;
-            out[n] = c;
+            if (copy) out[n] = c;
             n += 1;
         }
-        return out[0..n];
+        return if (copy) out[0..n] else s;
     }
 };
 

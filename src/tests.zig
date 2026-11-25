@@ -862,6 +862,13 @@ test "allocation failure is handled" {
     try checkParseAllocations(src.items);
 }
 
+test "allocation failure while converting a number is OutOfMemory, not Syntax" {
+    // Numbers long enough that converting them has to ask for memory.
+    try checkParseAllocations("a = 1." ++ rep("0", 100_000));
+    try checkParseAllocations("a = 1.0_" ++ rep("0", 100_000));
+    try checkParseAllocations("a = 0x" ++ rep("0_", 50_000) ++ "1");
+}
+
 fn editAndWrite(gpa: std.mem.Allocator) !void {
     var doc = try toml.Document.parse(gpa, "# c\na = 1 # t\n[s.t]\nk = [1]\n# end\n", .{}, null);
     defer doc.deinit();
