@@ -1387,6 +1387,14 @@ test "writer: no blank line at the top, and none added before the footer" {
     try expectOutput(&footer, "# end\n");
 }
 
+test "writer: an emptied implicit table is not dropped" {
+    var doc = try parseOk("[a.b]\n[c.d.e]\n");
+    defer doc.deinit();
+    try testing.expect(doc.root.getTable("a").?.remove("b"));
+    try testing.expect(doc.root.getTable("c").?.getTable("d").?.remove("e"));
+    try expectOutput(&doc, "[a]\n\n[c.d]\n");
+}
+
 test "setComments on an implicit table makes the writer give it a header" {
     var doc = try parseOk("[a.b]\nx = 1\n");
     defer doc.deinit();

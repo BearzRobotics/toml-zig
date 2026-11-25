@@ -197,7 +197,8 @@ fn sections(gpa: Allocator, w: *Writer, t: *const Table, path: *std.ArrayList([]
 }
 
 fn onlySections(t: *const Table) bool {
-    return t.kind == .implicit and !hasKeyLines(t);
+    // With no entries at all, only a header keeps the table in the output.
+    return t.kind == .implicit and t.count() != 0 and !hasKeyLines(t);
 }
 
 fn hasKeyLines(t: *const Table) bool {
