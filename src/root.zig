@@ -120,7 +120,9 @@ pub const Document = struct {
                 cur = t;
             }
         }
-        try cur.put(a, try self.dupe(path[path.len - 1]), v);
+        const last = path[path.len - 1];
+        // `put` keeps the key already there, so only a new one needs a copy.
+        try cur.put(a, cur.entries.getKey(last) orelse try self.dupe(last), v);
     }
 
     /// Attaches comments to the item at `path`: its `key = value` line, or its

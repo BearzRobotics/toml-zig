@@ -1121,6 +1121,17 @@ test "building and editing a document" {
     );
 }
 
+test "overwriting a value with set does not grow the document" {
+    var doc = try toml.Document.init(testing.allocator);
+    defer doc.deinit();
+    const key: []const u8 = rep("k", 1000);
+    try doc.set(&.{ "t", key }, .{ .integer = 0 });
+    const before = doc.arena.queryCapacity();
+    for (0..10_000) |i| try doc.set(&.{ "t", key }, .{ .integer = @intCast(i) });
+    try testing.expectEqual(before, doc.arena.queryCapacity());
+    try testing.expectEqual(@as(i64, 9999), doc.root.getTable("t").?.getInt(key).?);
+}
+
 test "editing a parsed document keeps unknown keys" {
     var doc = try parseOk("[panel]\nposition = \"top\"\nfuture_key = [1, 2]\n[other]\nx = 1\n");
     defer doc.deinit();
