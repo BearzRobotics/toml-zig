@@ -99,6 +99,7 @@ pub fn parse(gpa: Allocator, arena: Allocator, root: *Table, r: *Io.Reader, opti
     defer p.pending.deinit(gpa);
     if (try p.s.peekAt(0) == 0xEF and try p.s.peekAt(1) == 0xBB and try p.s.peekAt(2) == 0xBF) {
         for (0..3) |_| try p.s.bump();
+        p.s.col = 1; // editors give the mark no column
     }
     root.kind = .explicit;
     try p.document();

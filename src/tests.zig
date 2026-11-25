@@ -592,6 +592,9 @@ test "diagnostics report line, column and message" {
         .{ .src = "\n\n  = 1", .line = 3, .column = 3, .message = "expected key" },
         .{ .src = "a = 2023-02-29", .line = 1, .column = 5, .message = "invalid date or time" },
         .{ .src = "a = 99999999999999999999", .line = 1, .column = 5, .message = "integer out of range" },
+        // A byte-order mark takes up no column.
+        .{ .src = "\xEF\xBB\xBFa = @", .line = 1, .column = 5, .message = "invalid integer" },
+        .{ .src = "\xEF\xBB\xBFa = 1\nb", .line = 2, .column = 2, .message = "expected '=' after key" },
         // Columns count code points, not bytes.
         .{ .src = "a = \"\u{e9}\u{20ac}\" x", .line = 1, .column = 10, .message = "expected end of line" },
         .{ .src = "a = \"\xff\"", .err = error.InvalidUtf8, .line = 1, .column = 6, .message = "invalid UTF-8" },
