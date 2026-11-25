@@ -222,7 +222,17 @@ pub const Table = struct {
     /// storage in `value` must outlive the table (allocate from the document arena).
     pub fn put(self: *Table, arena: Allocator, key: []const u8, value: Value) Allocator.Error!void {
         const gop = try self.entries.getOrPut(arena, key);
-        if (!gop.found_existing) gop.key_ptr.* = key;
+        if (!gop.found_existing) {
+            gop.key_ptr.* = key;
+        } else switch (gop.value_ptr.*) {
+            // A replaced table takes its header comments with it, so keep them
+            // with the key. The writer finds them there.
+            .table => |old| if (!old.header.isEmpty() and !(value == .table and value.table == old)) {
+                const slot = try self.key_comments.getOrPut(arena, gop.key_ptr.*);
+                if (!slot.found_existing) slot.value_ptr.* = old.header;
+            },
+            else => {},
+        }
         gop.value_ptr.* = value;
     }
 

@@ -107,11 +107,20 @@ fn isSection(v: Value) bool {
 /// section that holds it, rather than under a header of its own. That is how a
 /// table made by dotted keys was written. It still needs a header to hold
 /// header comments, or to exist at all once it has no entries.
-fn asDotted(v: Value) ?*const Table {
+fn asDotted(parent: *const Table, key: []const u8, v: Value) ?*const Table {
     return switch (v) {
-        .table => |t| if (t.kind == .dotted and t.count() != 0 and t.header.isEmpty()) t else null,
+        .table => |t| if (t.kind == .dotted and t.count() != 0 and
+            headerComments(parent, key, t).isEmpty()) t else null,
         else => null,
     };
+}
+
+/// The comments for the header of `t`, found under `key` in `parent`. If the
+/// table has none of its own, those on the key are used: they are there when
+/// a `key = value` line has since become a table.
+fn headerComments(parent: *const Table, key: []const u8, t: *const Table) Comments {
+    if (!t.header.isEmpty()) return t.header;
+    return parent.commentsOf(key) orelse .{};
 }
 
 /// The dotted-key segments leading to the entry being written, innermost first.
@@ -136,7 +145,7 @@ fn emit(gpa: Allocator, w: *Writer, t: *const Table, path: *std.ArrayList([]cons
 
 fn keyLines(w: *Writer, t: *const Table, prefix: ?*const Prefix, first: *bool) Writer.Error!void {
     for (t.entries.keys(), t.entries.values()) |k, v| {
-        if (asDotted(v)) |sub| {
+        if (asDotted(t, k, v)) |sub| {
             try keyLines(w, sub, &.{ .outer = prefix, .key = k }, first);
             continue;
         }
@@ -158,20 +167,22 @@ fn sections(gpa: Allocator, w: *Writer, t: *const Table, path: *std.ArrayList([]
         try path.append(gpa, k);
         defer _ = path.pop();
         // Its lines are already written; only sections below it remain.
-        if (asDotted(v)) |sub| {
+        if (asDotted(t, k, v)) |sub| {
             try sections(gpa, w, sub, path, first);
             continue;
         }
         switch (v) {
             .table => |sub| {
                 // An implicit parent with only sub-tables needs no header of its own.
-                if (!onlySections(sub)) {
-                    try header(w, path.items, false, first, sub.header);
+                const c = headerComments(t, k, sub);
+                if (!c.isEmpty() or !onlySections(sub)) {
+                    try header(w, path.items, false, first, c);
                 }
                 try emit(gpa, w, sub, path, first);
             },
-            .array => |a| for (a.items.items) |item| {
-                try header(w, path.items, true, first, item.table.header);
+            .array => |a| for (a.items.items, 0..) |item, i| {
+                const c = if (i == 0) headerComments(t, k, item.table) else item.table.header;
+                try header(w, path.items, true, first, c);
                 try emit(gpa, w, item.table, path, first);
             },
             else => unreachable,
@@ -184,8 +195,8 @@ fn onlySections(t: *const Table) bool {
 }
 
 fn hasKeyLines(t: *const Table) bool {
-    for (t.entries.values()) |v| {
-        if (asDotted(v)) |sub| {
+    for (t.entries.keys(), t.entries.values()) |k, v| {
+        if (asDotted(t, k, v)) |sub| {
             if (hasKeyLines(sub)) return true;
         } else if (!isSection(v)) return true;
     }

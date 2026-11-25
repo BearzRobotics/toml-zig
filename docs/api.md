@@ -242,7 +242,8 @@ Comments *inside* an array or an inline table are not kept.
 
 Add or replace comments with `setComments`. Each `before` line is `#...` or
 empty; `after` starts with `#`. Strings are copied. A bad line gives
-`error.InvalidComment`; an unknown path gives `error.NotFound`.
+`error.InvalidComment`; an unknown path gives `error.NotFound`; a path into
+an inline table gives `error.CommentsNotSupported`.
 
 ```zig
 try doc.setComments(&.{ "panel", "height" }, .{

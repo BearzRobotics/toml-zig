@@ -1350,6 +1350,80 @@ test "setComments on keys and headers" {
     try testing.expect(doc.root.commentsOf("a") == null);
 }
 
+fn expectOutput(doc: *const toml.Document, want: []const u8) !void {
+    const out = try doc.toOwnedString(testing.allocator);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(want, out);
+    try roundTrip(out);
+}
+
+fn emptyTable(doc: *toml.Document) !*toml.Table {
+    const t = try doc.allocator().create(toml.Table);
+    t.* = .{};
+    return t;
+}
+
+test "setComments on an implicit table makes the writer give it a header" {
+    var doc = try parseOk("[a.b]\nx = 1\n");
+    defer doc.deinit();
+    try doc.setComments(&.{"a"}, .{ .after = "# hello" });
+    try expectOutput(&doc, "[a] # hello\n\n[a.b]\nx = 1\n");
+}
+
+test "setComments refuses places that cannot hold a comment" {
+    var doc = try parseOk("a = { b = 1, c.d = 2 }\nlist = [1]\n");
+    defer doc.deinit();
+    for ([_][]const []const u8{ &.{ "a", "b" }, &.{ "a", "c" }, &.{ "a", "c", "d" } }) |path| {
+        try testing.expectError(error.CommentsNotSupported, doc.setComments(path, .{ .after = "# x" }));
+        try testing.expectError(error.CommentsNotSupported, doc.setComments(path, .{ .before = &.{"# x"} }));
+    }
+    try testing.expectError(error.NotFound, doc.setComments(&.{ "a", "zz" }, .{ .after = "# x" }));
+    // The inline table's own line can hold them.
+    try doc.setComments(&.{"a"}, .{ .after = "# ok" });
+    try expectOutput(&doc, "a = { b = 1, c.d = 2 } # ok\nlist = [1]\n");
+}
+
+test "comments stay with a key whose value changes between scalar and table" {
+    // Scalar to table, and to an array of tables.
+    var doc = try parseOk("# doc for k\nk = 1 # tail\n");
+    defer doc.deinit();
+    try doc.set(&.{"k"}, .{ .table = try emptyTable(&doc) });
+    try expectOutput(&doc, "# doc for k\n[k] # tail\n");
+    const list = try doc.allocator().create(toml.Array);
+    list.* = .{ .is_table_array = true };
+    try list.items.append(doc.allocator(), .{ .table = try emptyTable(&doc) });
+    try list.items.append(doc.allocator(), .{ .table = try emptyTable(&doc) });
+    try doc.set(&.{"k"}, .{ .array = list });
+    try expectOutput(&doc, "# doc for k\n[[k]] # tail\n\n[[k]]\n");
+    // And back.
+    try doc.set(&.{"k"}, .{ .integer = 2 });
+    try expectOutput(&doc, "# doc for k\nk = 2 # tail\n");
+
+    // Section to scalar, to another section, and to an inline table.
+    var section = try parseOk("# about t\n[t] # head\nx = 1\n");
+    defer section.deinit();
+    try section.set(&.{"t"}, .{ .table = try emptyTable(&section) });
+    try expectOutput(&section, "# about t\n[t] # head\n");
+    try section.set(&.{"t"}, .{ .integer = 3 });
+    try expectOutput(&section, "# about t\nt = 3 # head\n");
+
+    // Setting the new comments replaces the carried ones, and clearing them
+    // does not bring the old ones back.
+    try section.set(&.{"t"}, .{ .table = try emptyTable(&section) });
+    try section.setComments(&.{"t"}, .{ .after = "# new" });
+    try expectOutput(&section, "[t] # new\n");
+    try section.setComments(&.{"t"}, .{});
+    try expectOutput(&section, "[t]\n");
+
+    // A dotted table moved onto a commented key keeps the comment too.
+    var dotted = try parseOk("# about k\nk = 1\n");
+    defer dotted.deinit();
+    var from = try parseOk("k.a = 1\n");
+    defer from.deinit();
+    try dotted.set(&.{"k"}, from.root.get("k").?);
+    try expectOutput(&dotted, "# about k\n[k]\na = 1\n");
+}
+
 test "a comment-only document and CRLF line endings keep their comments" {
     try roundTrips("# just a comment\n");
     var doc = try parseOk("# c\r\nk = 1 # t\r\n");

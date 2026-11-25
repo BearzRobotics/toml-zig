@@ -136,7 +136,8 @@ key segments (`&.{ "a", "b", "c" }`, for `set` and `setComments`).
 `Document.setComments(path, comments) !void`
 : Attach comments to the item at `path` (its `key = value` line, or its
   `[header]` line for a table written as a section). Strings are copied. Fails
-  with `NotFound` or `InvalidComment`.
+  with `NotFound`, `InvalidComment`, or `CommentsNotSupported` for an item
+  inside an inline table.
 
 `Document.write(gpa, writer) WriteError!void`
 : Write TOML to a `*std.Io.Writer`.
@@ -237,7 +238,9 @@ header (including blank lines that separate groups of settings), a trailing
 
 comment on a line, and comments after the last item. They move with their
 
-item and are dropped with a removed key.
+item and are dropped with a removed key. They stay with a key whose value is
+changed with `set` or `put`, also between a scalar and a table. (Replacing a
+table by assigning through `getPtr` drops the old table's header comments.)
 
 # EXAMPLES
 

@@ -117,13 +117,16 @@ pub const Document = struct {
     /// Attaches comments to the item at `path`: its `key = value` line, or its
     /// `[header]` line if it is a table written as a section. For an array of
     /// tables, the header of its last element. Strings in `c` are copied. Fails
-    /// with `error.NotFound` if there is no such item and `error.InvalidComment`
-    /// if a line is not empty or `#...`.
-    pub fn setComments(self: *Document, path: []const []const u8, c: Comments) (Allocator.Error || error{ NotFound, InvalidComment })!void {
+    /// with `error.NotFound` if there is no such item, `error.InvalidComment`
+    /// if a line is not empty or `#...`, and `error.CommentsNotSupported` if
+    /// the item is inside an inline table, which is written on one line.
+    pub fn setComments(self: *Document, path: []const []const u8, c: Comments) (Allocator.Error || error{ NotFound, InvalidComment, CommentsNotSupported })!void {
         std.debug.assert(path.len > 0);
         try @import("value.zig").checkComments(c);
         var cur = self.root;
+        var in_inline = false;
         for (path[0 .. path.len - 1]) |seg| {
+            defer in_inline = in_inline or cur.kind == .inline_table;
             switch (cur.get(seg) orelse return error.NotFound) {
                 .table => |t| cur = t,
                 .array => |a| {
@@ -144,14 +147,18 @@ pub const Document = struct {
             .after = if (c.after) |x| try a.dupe(u8, x) else null,
         };
         const v = cur.get(last) orelse return error.NotFound;
+        if (in_inline and !own.isEmpty()) return error.CommentsNotSupported;
         switch (v) {
             .table => |t| if (t.kind != .inline_table) {
                 t.header = own;
+                // Comments carried on the key would otherwise reappear.
+                _ = cur.key_comments.orderedRemove(last);
                 return;
             },
             .array => |arr| if (arr.is_table_array and arr.items.items.len > 0) {
                 const t = lastTable(arr) orelse return error.NotFound;
                 t.header = own;
+                _ = cur.key_comments.orderedRemove(last);
                 return;
             },
             else => {},
