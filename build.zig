@@ -68,4 +68,27 @@ pub fn build(b: *std.Build) void {
     const cli_exe = b.addExecutable(.{ .name = "toml-parse", .root_module = cli_mod });
     const cli_step = b.step("cli", "Build zig-out/bin/toml-parse for comparing with poop");
     cli_step.dependOn(&b.addInstallArtifact(cli_exe, .{}).step);
+    // Compile (not run) both benchmark programs with the tests, so that they
+    // cannot stop building unnoticed.
+    test_step.dependOn(&bench_exe.step);
+    test_step.dependOn(&cli_exe.step);
+
+    // The official conformance suite, from a local checkout (it is not vendored).
+    const conformance_step = b.step("conformance", "Run toml-test; needs -Dsuite=PATH/toml-test/tests");
+    const conformance_mod = b.createModule(.{
+        .root_source_file = b.path("test/conformance.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "toml", .module = mod }},
+    });
+    const conformance_exe = b.addExecutable(.{ .name = "toml-conformance", .root_module = conformance_mod });
+    test_step.dependOn(&conformance_exe.step);
+    if (b.option([]const u8, "suite", "The tests/ directory of a toml-test checkout")) |suite| {
+        const run = b.addRunArtifact(conformance_exe);
+        run.addArg(suite);
+        run.has_side_effects = true;
+        conformance_step.dependOn(&run.step);
+    } else {
+        conformance_step.dependOn(&b.addFail("pass -Dsuite=PATH/toml-test/tests").step);
+    }
 }

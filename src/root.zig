@@ -168,4 +168,6 @@ test {
     _ = @import("tests.zig");
     _ = @import("io_tests.zig");
     _ = @import("api_examples.zig");
+    _ = @import("test_util.zig");
+    _ = @import("fuzz_tests.zig");
 }

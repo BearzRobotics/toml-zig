@@ -92,6 +92,8 @@ test "errors: diagnostic carries line, column and message" {
     var diag: toml.Diagnostic = .{};
     try testing.expectError(error.Syntax, toml.Document.parse(gpa, "a = 1\na = 2\n", .{}, &diag));
     try testing.expectEqual(@as(usize, 2), diag.line);
+    try testing.expectEqual(@as(usize, 1), diag.column);
+    try testing.expectEqualStrings("duplicate key", diag.message);
     var buf: [128]u8 = undefined;
     const s = try std.fmt.bufPrint(&buf, "{f}", .{diag});
     try testing.expect(std.mem.startsWith(u8, s, "2:"));

@@ -31,7 +31,8 @@ test "every toml block in the guide parses; only the 1.1-only block fails under 
         try testing.expect(parses(.v1_1, block));
         if (!parses(.v1_0, block)) {
             only11 += 1;
-            try testing.expect(std.mem.indexOf(u8, block, "bg = ") != null);
+            // The one 1.1 feature shown as a block: a multi-line inline table.
+            try testing.expect(std.mem.indexOf(u8, block, "colors = {\n") != null);
         }
     }
     try testing.expect(blocks >= 8);

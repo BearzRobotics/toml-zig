@@ -23,4 +23,4 @@ var doc3 = try toml.Document.parse(gpa, text, .{ .version = .v1_0 }, &diag);
 - `zig build bench` — parse/write timings (ReleaseFast).
 - `zig build cli` — builds `zig-out/bin/toml-parse` (`gen <bytes>`, `slice|reader <file>`) for whole-process comparisons of two builds with [poop](https://github.com/andrewrk/poop): `poop 'old/toml-parse slice f.toml' 'new/toml-parse slice f.toml'`.
 
-`zig build test` runs the tests.
+`zig build test` runs the tests. `zig build conformance -Dsuite=PATH/toml-test/tests` runs the official [toml-test](https://github.com/toml-lang/toml-test) decoder cases from a local checkout.

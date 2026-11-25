@@ -6,6 +6,7 @@ const toml = @import("root.zig");
 const testing = std.testing;
 
 const TrickleReader = @import("io_tests.zig").TrickleReader;
+const expectSameTree = @import("test_util.zig").expectSameTree;
 
 const V10: toml.Options = .{ .version = .v1_0 };
 const V11: toml.Options = .{ .version = .v1_1 };
@@ -26,6 +27,7 @@ fn parseWith(opts: toml.Options, src: []const u8) !toml.Document {
         return e;
     };
     defer doc2.deinit();
+    try expectSameTree(doc.root, doc2.root);
     const a = try doc.toOwnedString(testing.allocator);
     defer testing.allocator.free(a);
     const b = try doc2.toOwnedString(testing.allocator);
@@ -41,6 +43,7 @@ fn parseOk(src: []const u8) !toml.Document {
     errdefer doc.deinit();
     var doc11 = try parseWith(V11, src);
     defer doc11.deinit();
+    try expectSameTree(doc.root, doc11.root);
     const a = try doc.toOwnedString(testing.allocator);
     defer testing.allocator.free(a);
     const b = try doc11.toOwnedString(testing.allocator);
@@ -49,39 +52,47 @@ fn parseOk(src: []const u8) !toml.Document {
     return doc;
 }
 
-fn rejects(opts: toml.Options, src: []const u8) !bool {
+/// A wrapper, so that an expected parse error is a value rather than a failure
+/// of the helper that reports it.
+const Rejection = struct { err: anyerror };
+
+/// The error `src` is rejected with, or null if it parses.
+fn rejects(opts: toml.Options, src: []const u8) !?Rejection {
     var diag: toml.Diagnostic = .{};
     if (toml.Document.parse(testing.allocator, src, opts, &diag)) |*doc| {
         var d = doc.*;
         d.deinit();
-        return false;
+        return null;
     } else |e| {
-        // The error and its position must not depend on how bytes arrive.
+        // The error and its diagnostic must not depend on how bytes arrive.
         var tr = TrickleReader.init(src, 1, null);
         var diag2: toml.Diagnostic = .{};
         try testing.expectError(e, toml.Document.parseReader(testing.allocator, &tr.interface, opts, &diag2));
         try testing.expectEqual(diag.line, diag2.line);
         try testing.expectEqual(diag.column, diag2.column);
-        return true;
+        try testing.expectEqualStrings(diag.message, diag2.message);
+        return .{ .err = e };
     }
 }
 
-/// Invalid in every TOML version.
+/// A syntax error in every TOML version. Any other error is a test failure.
 fn expectInvalid(src: []const u8) !void {
     for ([_]toml.Options{ V10, V11 }) |opts| {
-        if (!try rejects(opts, src)) {
+        const r = try rejects(opts, src) orelse {
             std.debug.print("accepted invalid input ({t}): {s}\n", .{ opts.version, src });
             return error.AcceptedInvalid;
-        }
+        };
+        try testing.expectEqual(@as(anyerror, error.Syntax), r.err);
     }
 }
 
-/// Invalid in TOML 1.0 but valid in 1.1.
+/// A syntax error in TOML 1.0 but valid in 1.1.
 fn expectOnly11(src: []const u8) !void {
-    if (!try rejects(V10, src)) {
+    const r = try rejects(V10, src) orelse {
         std.debug.print("1.0 accepted a 1.1-only input: {s}\n", .{src});
         return error.AcceptedInvalid;
-    }
+    };
+    try testing.expectEqual(@as(anyerror, error.Syntax), r.err);
     var doc = try parseWith(V11, src);
     doc.deinit();
 }
@@ -200,6 +211,7 @@ test "strings: literal keeps backslashes" {
     var doc = try parseOk("winpath = 'C:\\Users\\nodejs\\templates'\nregex = '<\\i\\c*\\s*>'\n");
     defer doc.deinit();
     try testing.expectEqualStrings("C:\\Users\\nodejs\\templates", doc.root.getString("winpath").?);
+    try testing.expectEqualStrings("<\\i\\c*\\s*>", doc.root.getString("regex").?);
 }
 
 test "integers" {
@@ -223,18 +235,19 @@ test "integers" {
         \\zero = -0
     );
     defer doc.deinit();
-    const r = doc.root;
-    try testing.expectEqual(@as(i64, 99), r.getInt("int1").?);
-    try testing.expectEqual(@as(i64, -17), r.getInt("int4").?);
-    try testing.expectEqual(@as(i64, 1000), r.getInt("int5").?);
-    try testing.expectEqual(@as(i64, 12345), r.getInt("int8").?);
-    try testing.expectEqual(@as(i64, 0xDEADBEEF), r.getInt("hex1").?);
-    try testing.expectEqual(@as(i64, 0xdeadbeef), r.getInt("hex3").?);
-    try testing.expectEqual(@as(i64, 0o01234567), r.getInt("oct1").?);
-    try testing.expectEqual(@as(i64, 214), r.getInt("bin1").?);
-    try testing.expectEqual(std.math.minInt(i64), r.getInt("min").?);
-    try testing.expectEqual(std.math.maxInt(i64), r.getInt("max").?);
-    try testing.expectEqual(@as(i64, 0), r.getInt("zero").?);
+    const want = [_]struct { []const u8, i64 }{
+        .{ "int1", 99 },                  .{ "int2", 42 },
+        .{ "int3", 0 },                   .{ "int4", -17 },
+        .{ "int5", 1000 },                .{ "int6", 5349221 },
+        .{ "int7", 5349221 },             .{ "int8", 12345 },
+        .{ "hex1", 0xDEADBEEF },          .{ "hex2", 0xDEADBEEF },
+        .{ "hex3", 0xDEADBEEF },          .{ "oct1", 0o01234567 },
+        .{ "oct2", 493 },                 .{ "bin1", 214 },
+        .{ "zero", 0 },                   .{ "min", std.math.minInt(i64) },
+        .{ "max", std.math.maxInt(i64) },
+    };
+    try testing.expectEqual(want.len, doc.root.count());
+    for (want) |w| try testing.expectEqual(w[1], doc.root.getInt(w[0]).?);
 }
 
 test "integers: invalid" {
@@ -273,14 +286,16 @@ test "floats" {
     );
     defer doc.deinit();
     const r = doc.root;
-    try testing.expectEqual(@as(f64, 1.0), r.getFloat("flt1").?);
-    try testing.expectEqual(@as(f64, 5e22), r.getFloat("flt4").?);
-    try testing.expectEqual(@as(f64, 1e6), r.getFloat("flt5").?);
-    try testing.expectEqual(@as(f64, -0.02), r.getFloat("flt6").?);
-    try testing.expectEqual(@as(f64, 224617.445991228), r.getFloat("flt8").?);
-    try testing.expect(std.math.isInf(r.getFloat("sf2").?));
-    try testing.expect(r.getFloat("sf3").? < 0);
-    try testing.expect(std.math.isNan(r.getFloat("sf4").?));
+    const inf = std.math.inf(f64);
+    const want = [_]struct { []const u8, f64 }{
+        .{ "flt1", 1.0 },       .{ "flt2", 3.1415 },           .{ "flt3", -0.01 },
+        .{ "flt4", 5e22 },      .{ "flt5", 1e6 },              .{ "flt6", -0.02 },
+        .{ "flt7", 6.626e-34 }, .{ "flt8", 224617.445991228 }, .{ "sf1", inf },
+        .{ "sf2", inf },        .{ "sf3", -inf },
+    };
+    for (want) |w| try testing.expectEqual(w[1], r.get(w[0]).?.float);
+    try testing.expect(std.math.isNan(r.get("sf4").?.float));
+    try testing.expect(std.math.isNan(r.get("sf5").?.float));
     // An integer is accepted by getFloat, but a float is not an integer.
     try testing.expect(r.getInt("flt1") == null);
 }
@@ -324,15 +339,33 @@ test "datetimes" {
         \\leap = 2024-02-29
     );
     defer doc.deinit();
-    const r = doc.root;
-    const odt2 = r.get("odt2").?.datetime;
-    try testing.expectEqual(@as(i16, -420), odt2.offset_minutes.?);
-    try testing.expectEqual(@as(u32, 999999000), r.get("odt3").?.datetime.time.?.nanosecond);
-    try testing.expectEqual(@as(i16, 0), r.get("odt4").?.datetime.offset_minutes.?);
-    try testing.expect(r.get("ldt1").?.datetime.offset_minutes == null);
-    try testing.expect(r.get("ld1").?.datetime.time == null);
-    try testing.expect(r.get("lt1").?.datetime.date == null);
-    try testing.expectEqual(@as(u8, 29), r.get("leap").?.datetime.date.?.day);
+    // Every field of every value, through the canonical spelling.
+    const want = [_]struct { []const u8, []const u8 }{
+        .{ "odt1", "1979-05-27T07:32:00Z" },
+        .{ "odt2", "1979-05-27T00:32:00-07:00" },
+        .{ "odt3", "1979-05-27T00:32:00.999999-07:00" },
+        .{ "odt4", "1979-05-27T07:32:00Z" },
+        .{ "ldt1", "1979-05-27T07:32:00" },
+        .{ "ldt2", "1979-05-27T00:32:00.999999" },
+        .{ "ld1", "1979-05-27" },
+        .{ "lt1", "07:32:00" },
+        .{ "lt2", "00:32:00.999999" },
+        .{ "leap", "2024-02-29" },
+    };
+    for (want) |w| {
+        var buf: [64]u8 = undefined;
+        const got = try std.fmt.bufPrint(&buf, "{f}", .{doc.root.get(w[0]).?.datetime});
+        try testing.expectEqualStrings(w[1], got);
+    }
+    // And the fields themselves, so the check does not rest on `format` alone.
+    const odt3 = doc.root.get("odt3").?.datetime;
+    try testing.expectEqual(toml.Date{ .year = 1979, .month = 5, .day = 27 }, odt3.date.?);
+    try testing.expectEqual(toml.Time{ .hour = 0, .minute = 32, .second = 0, .nanosecond = 999999000 }, odt3.time.?);
+    try testing.expectEqual(@as(i16, -420), odt3.offset_minutes.?);
+    const lt1 = doc.root.get("lt1").?.datetime;
+    try testing.expect(lt1.date == null and lt1.offset_minutes == null);
+    try testing.expect(doc.root.get("ld1").?.datetime.time == null);
+    try testing.expect(doc.root.get("ldt1").?.datetime.offset_minutes == null);
 }
 
 test "datetimes: invalid" {
@@ -502,6 +535,7 @@ test "line endings, BOM, whitespace" {
 }
 
 fn rep(comptime s: []const u8, comptime n: usize) *const [s.len * n]u8 {
+    @setEvalBranchQuota(100_000);
     comptime var out: [s.len * n]u8 = undefined;
     inline for (0..n) |i| out[i * s.len ..][0..s.len].* = s.*;
     const final = out;
@@ -523,11 +557,47 @@ test "invalid UTF-8 and limits" {
     try testing.expectError(error.LimitExceeded, toml.Document.parse(testing.allocator, deep_inline, .{}, null));
 }
 
-test "diagnostics report line and column" {
+const Expected = struct {
+    src: []const u8,
+    err: anyerror = error.Syntax,
+    line: usize,
+    column: usize,
+    message: []const u8,
+    options: toml.Options = .{},
+};
+
+fn expectDiagnostic(x: Expected) !void {
     var diag: toml.Diagnostic = .{};
-    try testing.expectError(error.Syntax, toml.Document.parse(testing.allocator, "a = 1\nb = 2\nc = @\n", .{}, &diag));
-    try testing.expectEqual(@as(usize, 3), diag.line);
-    try testing.expect(diag.message.len > 0);
+    if (toml.Document.parse(testing.allocator, x.src, x.options, &diag)) |*doc| {
+        var d = doc.*;
+        d.deinit();
+        return error.AcceptedInvalid;
+    } else |e| try testing.expectEqual(x.err, @as(anyerror, e));
+    errdefer std.debug.print("input: {s}\ngot: {f}\n", .{ x.src, diag });
+    try testing.expectEqual(x.line, diag.line);
+    try testing.expectEqual(x.column, diag.column);
+    try testing.expectEqualStrings(x.message, diag.message);
+}
+
+test "diagnostics report line, column and message" {
+    for ([_]Expected{
+        .{ .src = "a = 1\nb = 2\nc = @\n", .line = 3, .column = 5, .message = "invalid integer" },
+        .{ .src = "a = 1\na = 2\n", .line = 2, .column = 1, .message = "duplicate key" },
+        .{ .src = "[a]\n  [a]\n", .line = 2, .column = 3, .message = "table defined more than once" },
+        .{ .src = "key value", .line = 1, .column = 5, .message = "expected '=' after key" },
+        .{ .src = "a = \"x\\q\"", .line = 1, .column = 7, .message = "invalid escape sequence" },
+        .{ .src = "a = \"abc\n", .line = 1, .column = 9, .message = "newline in single-line string" },
+        .{ .src = "a = [1 2]", .line = 1, .column = 8, .message = "expected ',' or ']' in array" },
+        .{ .src = "a = 1 b", .line = 1, .column = 7, .message = "expected end of line" },
+        .{ .src = "\n\n  = 1", .line = 3, .column = 3, .message = "expected key" },
+        .{ .src = "a = 2023-02-29", .line = 1, .column = 5, .message = "invalid date or time" },
+        .{ .src = "a = 99999999999999999999", .line = 1, .column = 5, .message = "integer out of range" },
+        // Columns count code points, not bytes.
+        .{ .src = "a = \"\u{e9}\u{20ac}\" x", .line = 1, .column = 10, .message = "expected end of line" },
+        .{ .src = "a = \"\xff\"", .err = error.InvalidUtf8, .line = 1, .column = 6, .message = "invalid UTF-8" },
+        .{ .src = "a = 12", .err = error.LimitExceeded, .line = 1, .column = 6, .message = "input too large", .options = .{ .max_bytes = 5 } },
+        .{ .src = "a = [[1]]", .err = error.LimitExceeded, .line = 1, .column = 6, .message = "nesting too deep", .options = .{ .max_depth = 1 } },
+    }) |x| try expectDiagnostic(x);
 }
 
 test "empty and comment-only documents" {
@@ -564,7 +634,101 @@ test "full example from the spec" {
     try testing.expectEqual(@as(f64, 79.5), doc.root.lookup("database.temp_targets.cpu").?.float);
 }
 
+// ---- boundaries ------------------------------------------------------------
+
+fn expectValid(src: []const u8) !void {
+    var doc = try parseOk(src);
+    doc.deinit();
+}
+
+test "datetimes: calendar and range boundaries" {
+    try expectValid("a = 2000-02-29"); // divisible by 400: leap
+    try expectInvalid("a = 1900-02-29"); // divisible by 100 only: not leap
+    try expectInvalid("a = 2100-02-29");
+    for ([_]u8{ 4, 6, 9, 11 }) |month| {
+        var buf: [32]u8 = undefined;
+        try expectValid(try std.fmt.bufPrint(&buf, "a = 2024-{d:0>2}-30", .{month}));
+        try expectInvalid(try std.fmt.bufPrint(&buf, "a = 2024-{d:0>2}-31", .{month}));
+    }
+    for ([_]u8{ 1, 3, 5, 7, 8, 10, 12 }) |month| {
+        var buf: [32]u8 = undefined;
+        try expectValid(try std.fmt.bufPrint(&buf, "a = 2024-{d:0>2}-31", .{month}));
+    }
+    try expectInvalid("a = 2024-01-00");
+    try expectValid("a = 23:59:60"); // leap second
+    try expectInvalid("a = 23:59:61");
+    try expectValid("a = 1979-05-27T07:32:00+23:59");
+    try expectValid("a = 1979-05-27T07:32:00-23:59");
+    try expectInvalid("a = 1979-05-27T07:32:00+24:00");
+    try expectInvalid("a = 1979-05-27T07:32:00+00:60");
+}
+
+test "max_depth and max_bytes are exact" {
+    const gpa = testing.allocator;
+    var at_depth = try toml.Document.parse(gpa, "a = " ++ rep("[", 64) ++ rep("]", 64), .{}, null);
+    at_depth.deinit();
+    try testing.expectError(error.LimitExceeded, toml.Document.parse(gpa, "a = " ++ rep("[", 65) ++ rep("]", 65), .{}, null));
+    var at_size = try toml.Document.parse(gpa, "a = 1", .{ .max_bytes = 5 }, null);
+    at_size.deinit();
+    try testing.expectError(error.LimitExceeded, toml.Document.parse(gpa, "a = 1", .{ .max_bytes = 4 }, null));
+}
+
+test "CRLF is kept inside both kinds of multi-line string" {
+    var doc = try parseOk("b = \"\"\"\r\nx\r\ny\"\"\"\r\nl = '''\r\nx\r\ny'''\r\n");
+    defer doc.deinit();
+    try testing.expectEqualStrings("x\r\ny", doc.root.getString("b").?);
+    try testing.expectEqualStrings("x\r\ny", doc.root.getString("l").?);
+}
+
 // ---- writing and round trips ---------------------------------------------
+
+test "writer: exact output for every value type and every escape" {
+    const src =
+        \\s = "q\" b\\ n\n r\r t\t \b \f \u0000 \u001F \u007F é"
+        \\"" = "empty key"
+        \\"a b" = -9223372036854775808
+        \\max = 9223372036854775807
+        \\yes = true
+        \\no = false
+        \\f = -0.0
+        \\big = 1e300
+        \\small = 1.5e-7
+        \\whole = 3.0
+        \\specials = [inf, -inf, nan]
+        \\odt = 1979-05-27T07:32:00.000000001-07:30
+        \\utc = 1979-05-27T07:32:00+00:00
+        \\ldt = 1979-05-27T07:32:00
+        \\ld = 0001-01-01
+        \\lt = 07:32:00.5
+        \\arr = [[], [1, ["x"]], {}, { a = { b = 2 } }]
+        \\
+    ;
+    var doc = try parseOk(src);
+    defer doc.deinit();
+    const out = try doc.toOwnedString(testing.allocator);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(
+        \\s = "q\" b\\ n\n r\r t\t \b \f \u0000 \u001F \u007F é"
+        \\"" = "empty key"
+        \\"a b" = -9223372036854775808
+        \\max = 9223372036854775807
+        \\yes = true
+        \\no = false
+        \\f = -0.0
+        \\big = 1e300
+        \\small = 1.5e-7
+        \\whole = 3.0
+        \\specials = [inf, -inf, nan]
+        \\odt = 1979-05-27T07:32:00.000000001-07:30
+        \\utc = 1979-05-27T07:32:00Z
+        \\ldt = 1979-05-27T07:32:00
+        \\ld = 0001-01-01
+        \\lt = 07:32:00.5
+        \\arr = [[], [1, ["x"]], {}, { a = { b = 2 } }]
+        \\
+    , out);
+    try roundTrip(src);
+}
 
 fn roundTrip(src: []const u8) !void {
     var a = try parseOk(src);
@@ -577,6 +741,8 @@ fn roundTrip(src: []const u8) !void {
         return e;
     };
     defer b.deinit();
+    // The writer must not lose or change anything.
+    try expectSameTree(a.root, b.root);
     const text2 = try b.toOwnedString(testing.allocator);
     defer testing.allocator.free(text2);
     try testing.expectEqualStrings(text, text2);
@@ -669,17 +835,71 @@ test "no leaks on error paths" {
     for (bad) |src| try expectInvalid(src);
 }
 
+fn parseOnce(gpa: std.mem.Allocator, src: []const u8) !void {
+    var doc = try toml.Document.parse(gpa, src, .{}, null);
+    doc.deinit();
+}
+
+/// Fails each allocation in turn, requiring `OutOfMemory` and no leak.
+fn checkParseAllocations(src: []const u8) !void {
+    try testing.checkAllAllocationFailures(testing.allocator, parseOnce, .{src});
+}
+
 test "allocation failure is handled" {
-    const src = "a = [1, 2, { b = \"x\" }]\n[t.u]\nk = 1\n[[l]]\nz = 2\n";
-    var fail_index: usize = 0;
-    while (fail_index < 200) : (fail_index += 1) {
-        var fa = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = fail_index });
-        if (toml.Document.parse(fa.allocator(), src, .{}, null)) |*d| {
-            var dd = d.*;
-            dd.deinit();
-            break;
-        } else |e| try testing.expectEqual(error.OutOfMemory, e);
+    try checkParseAllocations("a = [1, 2, { b = \"x\" }]\n[t.u]\nk = 1\n[[l]]\nz = 2\n");
+
+    // Enough keys, tables and long strings that the arena has to grow often.
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(testing.allocator);
+    for (0..40) |i| {
+        try src.print(testing.allocator,
+            \\k{d} = "{s}"
+            \\a{d}.b.c = [1.5, 1979-05-27T07:32:00Z, {{ d = 'e' }}]
+            \\
+        , .{ i, rep("s", 200), i });
     }
+    for (0..40) |i| try src.print(testing.allocator, "[[list.sub{d}]]\nv = {d}\n", .{ i % 3, i });
+    try checkParseAllocations(src.items);
+}
+
+fn editAndWrite(gpa: std.mem.Allocator) !void {
+    var doc = try toml.Document.parse(gpa, "# c\na = 1 # t\n[s.t]\nk = [1]\n# end\n", .{}, null);
+    defer doc.deinit();
+    try doc.set(&.{ "new", "deep", "key" }, .{ .string = try doc.dupe(rep("v", 5000)) });
+    try doc.set(&.{"a"}, .{ .integer = 2 });
+    try doc.setComments(&.{ "s", "t", "k" }, .{ .before = &.{ "# one", "", "# two" }, .after = "# three" });
+    const out = try doc.toOwnedString(gpa);
+    gpa.free(out);
+}
+
+fn buildAndWrite(gpa: std.mem.Allocator) !void {
+    var doc = try toml.Document.init(gpa);
+    defer doc.deinit();
+    var name: [8]u8 = undefined;
+    for (0..40) |i| {
+        const key = try std.fmt.bufPrint(&name, "k{d}", .{i});
+        try doc.set(&.{ "a", "b", "c", key }, .{ .integer = 1 });
+        try doc.root.setComments(doc.allocator(), try doc.dupe(key), .{ .after = "# x" });
+    }
+    const out = try doc.toOwnedString(gpa);
+    gpa.free(out);
+}
+
+test "allocation failure while editing and writing is handled" {
+    // `Allocating` writers report a failed allocation as `WriteFailed`.
+    const run = struct {
+        fn edit(gpa: std.mem.Allocator) !void {
+            editAndWrite(gpa) catch |e| return asOom(e);
+        }
+        fn build(gpa: std.mem.Allocator) !void {
+            buildAndWrite(gpa) catch |e| return asOom(e);
+        }
+        fn asOom(e: anyerror) anyerror {
+            return if (e == error.WriteFailed) error.OutOfMemory else e;
+        }
+    };
+    try testing.checkAllAllocationFailures(testing.allocator, run.edit, .{});
+    try testing.checkAllAllocationFailures(testing.allocator, run.build, .{});
 }
 
 test "parseReader reads from a std.Io.Reader and enforces max_bytes" {
@@ -881,14 +1101,7 @@ test "a comment-only document and CRLF line endings keep their comments" {
     try testing.expectEqualStrings("# c\nk = 1 # t\n", out);
 }
 
-test "comment parsing does not leak on allocation failure" {
-    const src = "# a\nk = 1 # b\n\n# c\n[t] # d\nx = 2\n# end\n";
-    var i: usize = 0;
-    while (i < 64) : (i += 1) {
-        var fa = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = i });
-        if (toml.Document.parse(fa.allocator(), src, .{}, null)) |*d| {
-            var dd = d.*;
-            dd.deinit();
-        } else |_| {}
-    }
+test "allocation failure while parsing comments is handled" {
+    try checkParseAllocations("# a\nk = 1 # b\n\n# c\n[t] # d\nx = 2\n# end\n");
+    try checkParseAllocations("# " ++ rep("long comment ", 500) ++ "\nk = 1 # " ++ rep("tail ", 1000) ++ "\n");
 }

@@ -41,9 +41,11 @@ Ownership: strings and tables returned by getters borrow from the document and a
 - Datetime fractional seconds beyond nanoseconds are truncated.
 - `Table.lookup` splits on `.`; keys containing a dot need `get`.
 
-- Duplicate-key and table-kind rules follow the 1.0.0 text; the official `toml-test` suite is not vendored and has **not** been run. Treat "conformant" as unverified until it is.
+- Duplicate-key and table-kind rules follow the 1.0.0 text; the official `toml-test` suite is not vendored. Its decoder cases for 1.0.0 and 1.1.0 passed at commit `96fd088` (2026-10-27); its encoder mode has not been run.
 - Parsing is single-threaded; documents are not safe for concurrent mutation.
 
 ## Testing
 
-`zig build test`: examples from the TOML specification, invalid-input cases, limits, diagnostics, round trips, edit-preservation, and allocation-failure injection.
+`zig build test`: examples from the TOML specification, invalid-input cases (which must fail with `Syntax`), exact limits and diagnostics, round trips compared tree against tree, edit-preservation, every allocation failure (`std.testing.checkAllAllocationFailures`), buffered readers of every small size, and a seeded mutation fuzz test. It also compiles the benchmark and conformance programs.
+
+`zig build conformance -Dsuite=PATH/toml-test/tests` runs the decoder cases of the official suite (not vendored; see `test/conformance.zig`).
