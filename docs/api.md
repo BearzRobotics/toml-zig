@@ -99,6 +99,10 @@ that builds trees itself (or raises these limits) can produce.
 
 Exceeding a limit gives `error.LimitExceeded`.
 
+`max_bytes` limits the input, not memory: many tiny tables can take about 90
+times the input size. For untrusted input, keep `max_bytes` small, or give
+`parse` an allocator with a budget (it then fails with `error.OutOfMemory`).
+
 ## 4. Read values
 
 Typed getters return an optional: `null` if the key is missing **or** has a

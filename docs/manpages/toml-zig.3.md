@@ -298,9 +298,23 @@ More in `docs/api.md`; every example there is compiled by `zig build test`.
 
 Memory is the parsed tree plus one reused scratch buffer; the input is not held
 
-in memory when `parseReader` is used. Defaults bound input to 16 MiB and
+in memory when `parseReader` is used. Defaults bound input to 16 MiB, array and
 
-nesting to 64 levels so that untrusted input cannot exhaust the stack. Measured
+inline table nesting to 64 and key nesting to 128 levels, so that untrusted
+
+input cannot exhaust the stack.
+
+These limits do **not** bound memory tightly. Very small constructs each make a
+
+table, so hostile input can use about 90 times its own size: 16 MiB of long
+
+dotted keys took about 1.4 GB (x86_64, ReleaseFast, `smp_allocator`; 1.0 to
+
+1.3 GB for repeated `[[a]]` or `{}`). For untrusted input, lower `max_bytes`,
+
+or pass `parse` an allocator that enforces a budget; the parse then fails with
+
+`OutOfMemory`. Measured
 
 throughput is in `docs/decisions/0001-streaming-parser.md` (roughly 40 MB/s
 

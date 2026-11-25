@@ -221,6 +221,12 @@ pub const Table = struct {
     /// Sets `key`, replacing any existing value. `key` and any string/array/table
     /// storage in `value` must outlive the table (allocate from the document arena).
     pub fn put(self: *Table, arena: Allocator, key: []const u8, value: Value) Allocator.Error!void {
+        // A table made by a dotted key or a header path usually holds one
+        // entry, and the default first allocation has room for several. In
+        // input made of long dotted keys that unused room was half the memory.
+        if (self.entries.capacity() == 0 and (self.kind == .dotted or self.kind == .implicit)) {
+            try self.entries.entries.setCapacity(arena, 1);
+        }
         const gop = try self.entries.getOrPut(arena, key);
         if (!gop.found_existing) {
             gop.key_ptr.* = key;

@@ -1226,6 +1226,23 @@ test "allocation failure while editing and writing is handled" {
     try testing.checkAllAllocationFailures(testing.allocator, run.build, .{});
 }
 
+test "tables on a dotted or header path reserve room for one entry" {
+    var doc = try parseOk("a.b.c = 1\n[d.e.f]\n");
+    defer doc.deinit();
+    const a = doc.root.getTable("a").?; // dotted
+    const d = doc.root.getTable("d").?; // implicit
+    for ([_]*toml.Table{ a, a.getTable("b").?, d, d.getTable("e").? }) |t| {
+        try testing.expectEqual(@as(usize, 1), t.entries.capacity());
+    }
+}
+
+test "a limiting allocator bounds the memory a parse can use" {
+    // What the documentation tells callers to do with untrusted input.
+    var buffer: [64 * 1024]u8 = undefined;
+    var limited: std.heap.FixedBufferAllocator = .init(&buffer);
+    try testing.expectError(error.OutOfMemory, toml.Document.parse(limited.allocator(), rep("[[a]]\n", 5000), .{}, null));
+}
+
 test "parseReader reads from a std.Io.Reader and enforces max_bytes" {
     const gpa = std.testing.allocator;
     var r: std.Io.Reader = .fixed("a = 1\n[t]\nb = \"x\"\n");
