@@ -1,6 +1,6 @@
 # toml-zig — Specification
 
-**Status:** 0.2.0, implemented and tested against the TOML 1.0.0 specification examples and the TOML 1.1.0 changes; see "Known deviations".
+**Status:** 0.3.0, implemented and tested against the TOML 1.0.0 specification examples, the TOML 1.1.0 changes and the `toml-test` decoder cases; see "Known deviations".
 
 ## Purpose
 

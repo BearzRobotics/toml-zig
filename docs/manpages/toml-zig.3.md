@@ -346,5 +346,5 @@ TOML input and the printed `line:column: message`.
 
 # VERSION
 
-This manual describes toml-zig 0.2.0.
+This manual describes toml-zig 0.3.0.
 

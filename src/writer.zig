@@ -1,10 +1,12 @@
 //! Serializes a table tree back to TOML text.
 //!
 //! Output is deterministic: keys appear in insertion order, scalar and dotted
-//! keys before sub-tables. Dotted keys are written as dotted keys. Comments (and the blank lines kept with them) are written back
-//! next to the item they were attached to; other formatting is not preserved,
-//! and comments inside arrays and inline tables are dropped. Unknown keys are
-//! preserved because the whole tree is.
+//! keys before sub-tables. Dotted keys are written as dotted keys.
+//!
+//! Comments (and the blank lines kept with them) are written back next to the
+//! item they were attached to; other formatting is not preserved, and comments
+//! inside arrays and inline tables are dropped. Unknown keys are preserved
+//! because the whole tree is.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
